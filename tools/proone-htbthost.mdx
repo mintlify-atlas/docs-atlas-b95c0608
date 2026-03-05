@@ -1,0 +1,177 @@
+---
+title: proone-htbthost
+description: Standalone heartbeat worker for testing
+---
+
+# proone-htbthost
+
+Standalone heartbeat worker executable for testing the Heartbeat protocol in isolation.
+
+## Overview
+
+`proone-htbthost` runs the Heartbeat worker subsystem independently, allowing protocol testing and debugging without running the full Proone instance. This is useful for:
+
+- Testing Heartbeat protocol implementations
+- Debugging TXT REC CNC mechanisms
+- Validating client-server communications
+- Development and integration testing
+
+**Source**: `~/workspace/source/src/proone-htbthost.c`
+
+## Usage
+
+```bash
+proone-htbthost <TXT REC> [options...] [DNS SPECs...]
+```
+
+### Arguments
+
+**`<TXT REC>`** (required)
+- Target TXT record for CNCP (CNC Probe)
+- Format: Domain name containing CNC instructions
+- Example: `cnc.example.com`
+
+**`[DNS SPECs...]`** (optional)
+- Additional DNS server specifications
+- Used to override default DoT servers
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--help` | Print usage information |
+| `--no-verify` | Do not verify client certificates |
+
+## Features
+
+### Heartbeat Protocol Testing
+
+Runs a complete Heartbeat worker including:
+- **Local Backdoor (LBD)**: Listens for incoming connections
+- **CNC Probe (CNCP)**: Queries TXT records for commands
+- **TLS/X.509**: Full certificate verification
+- **ALPN**: Application-Layer Protocol Negotiation
+
+### DNS over TLS
+
+Connects to hardcoded public DoT servers:
+- Queries TXT records securely
+- Connection persistence and failover
+- Base64-encoded instruction parsing
+
+### Certificate Verification
+
+By default, performs 2-way certificate verification:
+- Validates server certificates
+- Presents client certificate
+- Verifies ALPN protocol
+
+Use `--no-verify` to disable client cert verification for testing.
+
+## Example Usage
+
+### Basic Test
+
+```bash
+# Run with default settings
+proone-htbthost cnc.test.example.com
+```
+
+### Test Without Client Verification
+
+```bash
+# Disable client cert verification
+proone-htbthost --no-verify cnc.test.example.com
+```
+
+### Custom DNS Servers
+
+```bash
+# Specify custom DoT servers
+proone-htbthost cnc.test.example.com 1.1.1.1 8.8.8.8
+```
+
+## Protocol Operation
+
+1. **Initialization**: Sets up TLS context with X.509 certificates
+2. **LBD Listener**: Opens backdoor port for incoming connections
+3. **CNCP Query**: Periodically queries TXT record
+4. **Instruction Parse**: Decodes base64 instructions
+5. **Command Execution**: Processes Heartbeat protocol messages
+
+## Testing Scenarios
+
+### Protocol Validation
+
+Test protocol message handling:
+```bash
+# Terminal 1: Run htbthost
+proone-htbthost test.cnc.domain
+
+# Terminal 2: Connect with htbtclient
+proone-htbtclient <host>:<port>
+```
+
+### TXT REC CNC Testing
+
+Validate DNS-based CNC:
+1. Set up TXT records using `proone-txtrec-set`
+2. Run `proone-htbthost` with your domain
+3. Monitor instruction processing
+4. Clean up with `proone-txtrec-del`
+
+## Security Considerations
+
+<Warning>
+  This tool uses production TLS certificates and can establish real connections. Use only in isolated test environments.
+</Warning>
+
+- Runs actual Heartbeat protocol code
+- Uses production X.509 certificates from `proone_conf/x509.h`
+- Can accept real backdoor connections
+- Should not be exposed to untrusted networks
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Normal exit |
+| 1 | Configuration error |
+| 2 | Network error |
+| 3 | Protocol error |
+
+## Debugging
+
+Enable debug output:
+```bash
+# Build with debug flags
+PRNE_DEBUG=1 PRNE_VERBOSE=5 make
+
+# Run with verbose output
+./proone-htbthost test.domain
+```
+
+## Related Tools
+
+- [proone-htbtclient](/tools/proone-htbtclient) - Connect to Heartbeat hosts
+- [proone-hostinfod](/tools/proone-hostinfod) - Authoritative heartbeat daemon
+- [proone-txtrec-set](/tools/proone-txtrec-set) - Configure TXT REC CNC
+- [proone-txtrec-del](/tools/proone-txtrec-del) - Clean up TXT records
+
+## Implementation Notes
+
+From `proone-htbthost.c`:
+- Uses MbedTLS for cryptography
+- Implements full Heartbeat worker lifecycle
+- Supports both IPv4 and IPv6
+- Includes entropy source for randomization
+- Handles CNCP polling intervals
+
+## Source Reference
+
+**File**: `~/workspace/source/src/proone-htbthost.c` (609 lines)
+
+**Dependencies**:
+- `htbt.h` - Heartbeat protocol
+- `mbedtls.h` - TLS/crypto wrapper
+- `proone_conf/x509.h` - Certificate data

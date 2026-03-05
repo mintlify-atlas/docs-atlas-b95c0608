@@ -90,13 +90,16 @@
               "tools/proone-resolv",
               "tools/proone-pack",
               "tools/proone-mkcdict",
-              "tools/proone-mkdvault"
+              "tools/proone-mkdvault",
+              "tools/proone-txtrec-set",
+              "tools/proone-txtrec-del"
             ]
           },
           {
             "group": "Testing",
             "pages": [
-              "tools/test-suite"
+              "tools/test-suite",
+              "tools/proone-htbthost"
             ]
           }
         ]

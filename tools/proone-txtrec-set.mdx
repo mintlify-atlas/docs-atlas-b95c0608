@@ -1,0 +1,246 @@
+---
+title: proone-txtrec-set
+description: TXT REC CNC setup tool for configuring DNS-based command and control
+---
+
+# proone-txtrec-set
+
+Python script for setting up DNS TXT records for Proone's TXT REC CNC mechanism.
+
+## Overview
+
+`proone-txtrec-set` automates the creation of DNS TXT records containing base64-encoded Heartbeat protocol instructions. This enables DNS-based command and control without requiring direct network connections to Proone instances.
+
+**Source**: `~/workspace/source/src/proone-txtrec-set`
+
+**Language**: Python 3
+
+## Features
+
+- **Base64 Encoding**: Automatically encodes binary instructions
+- **Record Splitting**: Splits large payloads across multiple TXT records
+- **Provider Hooks**: Supports multiple DNS providers (AWS Route53, etc.)
+- **Batch Operations**: Updates multiple records in single API calls
+- **Header Management**: Automatically creates header record with count/suffix
+
+## Installation
+
+### Requirements
+
+```bash
+pip3 install boto3  # For AWS Route53 support
+```
+
+### Dependencies
+
+- Python 3.x
+- `prne_txtrec` module (included in source)
+- `boto3` (for AWS provider)
+
+## Usage
+
+```bash
+proone-txtrec-set --hook <provider> [options]
+```
+
+### Common Options
+
+| Option | Description |
+|--------|-------------|
+| `--hook <provider>` | DNS provider hook (aws, etc.) |
+| `--zone-id <id>` | DNS zone identifier |
+| `--head-rec <name>` | Header record name |
+| `--suffix <suffix>` | Data record suffix |
+| `--ttl <seconds>` | Time-to-live (default: 3600) |
+| `--help` | Show help message |
+
+## AWS Route53 Example
+
+### Basic Setup
+
+```bash
+# Set up CNC for cnc.example.com
+proone-txtrec-set --hook aws \
+  --zone-id Z1234567890ABC \
+  --head-rec cnc.example.com \
+  --suffix .data.example.com \
+  --ttl 1800
+```
+
+### With Custom TTL
+
+```bash
+# Shorter TTL for faster propagation
+proone-txtrec-set --hook aws \
+  --zone-id Z1234567890ABC \
+  --head-rec cnc.test.com \
+  --suffix .cnc.test.com \
+  --ttl 300
+```
+
+## How It Works
+
+### Record Structure
+
+Creates two types of records:
+
+**1. Header Record**
+```
+cnc.example.com TXT "00000003.data.example.com"
+```
+- First 8 digits: Number of data records (hexadecimal)
+- Remainder: Suffix for data records
+
+**2. Data Records**
+```
+00000000.data.example.com TXT "<base64 data chunk 1>"
+00000001.data.example.com TXT "<base64 data chunk 2>"
+00000002.data.example.com TXT "<base64 data chunk 3>"
+```
+
+### Record Splitting
+
+- Maximum: **189 bytes per TXT record** (after base64 encoding)
+- Larger payloads automatically split across multiple records
+- Records indexed sequentially: 00000000, 00000001, etc.
+
+## Input Format
+
+Reads Heartbeat protocol instructions from stdin:
+
+```bash
+# Pipe binary instructions
+cat instructions.bin | proone-txtrec-set --hook aws --zone-id Z123...
+
+# From Heartbeat protocol generator
+generate-htbt-commands | proone-txtrec-set --hook aws ...
+```
+
+### Instruction Encoding
+
+1. **Binary Input**: Raw Heartbeat protocol frames
+2. **Base64 Encode**: Converts to DNS-safe format
+3. **Split**: Divides into 189-byte chunks
+4. **Upload**: Creates TXT records via provider API
+
+## Provider Hooks
+
+### AWS Route53
+
+Requires:
+- AWS credentials configured (`~/.aws/credentials` or environment)
+- `boto3` Python library
+- IAM permissions for Route53 changes
+
+```bash
+export AWS_PROFILE=myprofile
+proone-txtrec-set --hook aws --zone-id Z123... --head-rec cnc.domain
+```
+
+### Custom Providers
+
+Extend `HOOK_ERRORS` and add provider functions:
+```python
+def main_custom(param: dict):
+    # Implement custom DNS provider logic
+    pass
+```
+
+## Example Workflow
+
+### Complete CNC Setup
+
+<Steps>
+  <Step title="Prepare Instructions">
+    Generate Heartbeat protocol instructions for your CNC commands.
+  </Step>
+  
+  <Step title="Configure DNS">
+    ```bash
+    cat instructions.bin | proone-txtrec-set \
+      --hook aws \
+      --zone-id Z1234567890ABC \
+      --head-rec cnc.botnet.example.com \
+      --suffix .data.botnet.example.com
+    ```
+  </Step>
+  
+  <Step title="Verify Records">
+    ```bash
+    dig TXT cnc.botnet.example.com
+    dig TXT 00000000.data.botnet.example.com
+    ```
+  </Step>
+  
+  <Step title="Test with htbthost">
+    ```bash
+    proone-htbthost cnc.botnet.example.com
+    ```
+  </Step>
+</Steps>
+
+## Error Handling
+
+### Exit Codes
+
+| Code | Error | Description |
+|------|-------|-------------|
+| 0 | Success | Records created |
+| 1 | NOT_IMPL | Provider not implemented |
+| 1 | AWS_NO_BOTO3 | boto3 not installed |
+| 2 | INV_ARG | Invalid arguments |
+
+### Common Errors
+
+**boto3 not found**:
+```bash
+pip3 install boto3
+```
+
+**Invalid zone ID**:
+- Check AWS Route53 console for correct zone ID
+- Format: `Z` followed by alphanumeric characters
+
+**Permission denied**:
+- Verify IAM role has `route53:ChangeResourceRecordSets`
+- Check AWS credentials are configured
+
+## Security Considerations
+
+<Warning>
+  TXT REC CNC exposes commands publicly in DNS. Anyone can query and decode your instructions. Use only in controlled research environments.
+</Warning>
+
+- TXT records are **publicly queryable**
+- Base64 is **encoding, not encryption**
+- Instructions are **visible to DNS resolvers**
+- Consider geographic restrictions on DNS zones
+- Monitor DNS query logs for anomalies
+
+## Performance Notes
+
+- **DNS Propagation**: Changes take seconds to minutes
+- **Batch Uploads**: Script batches API calls for efficiency
+- **Rate Limits**: AWS Route53 has API rate limits
+- **TTL Impact**: Lower TTL = faster updates, higher query load
+
+## Related Tools
+
+- [proone-txtrec-del](/tools/proone-txtrec-del) - Delete TXT REC CNC records
+- [proone-htbthost](/tools/proone-htbthost) - Test CNC with standalone worker
+- [Heartbeat Protocol](/protocols/heartbeat/overview) - Protocol specification
+- [TXT REC CNC](/protocols/heartbeat/txt-rec-cnc) - Detailed mechanism
+
+## Implementation Details
+
+From `proone-txtrec-set`:
+- Uses `prne_txtrec.py` module for shared logic
+- Implements AWS Route53 batch change API
+- Handles record pagination for large payloads
+- Validates input and provides detailed errors
+
+## Source Reference
+
+**File**: `~/workspace/source/src/proone-txtrec-set` (Python script)
+
+**Module**: `~/workspace/source/src/prne_txtrec.py` (shared utilities)

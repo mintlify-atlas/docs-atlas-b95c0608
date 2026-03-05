@@ -1,0 +1,281 @@
+---
+title: proone-txtrec-del
+description: TXT REC CNC deletion tool for cleaning up DNS records
+---
+
+# proone-txtrec-del
+
+Python script for deleting DNS TXT records created by `proone-txtrec-set` for Proone's TXT REC CNC mechanism.
+
+## Overview
+
+`proone-txtrec-del` removes CNC instruction records from DNS zones, including both header and data records. Essential for cleaning up after testing or terminating CNC operations.
+
+**Source**: `~/workspace/source/src/proone-txtrec-del`
+
+**Language**: Python 3
+
+## Features
+
+- **Automatic Discovery**: Finds all related data records from header
+- **Batch Deletion**: Removes multiple records in single API call
+- **Provider Hooks**: Supports multiple DNS providers (AWS Route53, etc.)
+- **Validation**: Parses header to identify all records
+- **Safe Operations**: Validates records before deletion
+
+## Installation
+
+### Requirements
+
+```bash
+pip3 install boto3  # For AWS Route53 support
+```
+
+### Dependencies
+
+- Python 3.x
+- `prne_txtrec` module (included in source)
+- `boto3` (for AWS provider)
+
+## Usage
+
+```bash
+proone-txtrec-del --hook <provider> [options]
+```
+
+### Common Options
+
+| Option | Description |
+|--------|-------------|
+| `--hook <provider>` | DNS provider hook (aws, etc.) |
+| `--zone-id <id>` | DNS zone identifier |
+| `--head-rec <name>` | Header record name to delete |
+| `--help` | Show help message |
+
+## AWS Route53 Example
+
+### Basic Deletion
+
+```bash
+# Delete CNC records for cnc.example.com
+proone-txtrec-del --hook aws \
+  --zone-id Z1234567890ABC \
+  --head-rec cnc.example.com
+```
+
+### Delete After Testing
+
+```bash
+# Clean up test records
+proone-txtrec-del --hook aws \
+  --zone-id Z1234567890ABC \
+  --head-rec cnc.test.example.com
+```
+
+## How It Works
+
+### Record Discovery Process
+
+<Steps>
+  <Step title="Query Header Record">
+    Fetches the header TXT record:
+    ```
+    cnc.example.com TXT "00000003.data.example.com"
+    ```
+  </Step>
+  
+  <Step title="Parse Header">
+    Extracts:
+    - Record count: `00000003` = 3 data records
+    - Suffix: `.data.example.com`
+  </Step>
+  
+  <Step title="Enumerate Data Records">
+    Generates data record names:
+    - `00000000.data.example.com`
+    - `00000001.data.example.com`
+    - `00000002.data.example.com`
+  </Step>
+  
+  <Step title="Batch Delete">
+    Removes all records (header + data) in single API call
+  </Step>
+</Steps>
+
+### Header Parsing
+
+Uses regex patterns:
+```python
+HEAD_TXT_RE = re.compile('"([0-9]{8})(.*)"')
+DATA_TXT_RE = re.compile('([0-9]{8})(.*)')
+```
+
+## Example Workflow
+
+### Complete Cleanup
+
+```bash
+# 1. List records to verify
+dig TXT cnc.botnet.example.com
+
+# 2. Delete all CNC records
+proone-txtrec-del --hook aws \
+  --zone-id Z1234567890ABC \
+  --head-rec cnc.botnet.example.com
+
+# 3. Verify deletion
+dig TXT cnc.botnet.example.com  # Should return NXDOMAIN
+```
+
+### Automated Test Cleanup
+
+```bash
+#!/bin/bash
+# test-and-cleanup.sh
+
+ZONE_ID="Z1234567890ABC"
+HEAD_REC="test.cnc.example.com"
+
+# Set up CNC
+cat instructions.bin | proone-txtrec-set \
+  --hook aws --zone-id $ZONE_ID --head-rec $HEAD_REC \
+  --suffix .data.example.com
+
+# Run tests
+proone-htbthost $HEAD_REC
+
+# Clean up
+proone-txtrec-del --hook aws --zone-id $ZONE_ID --head-rec $HEAD_REC
+```
+
+## Error Handling
+
+### Exit Codes
+
+| Code | Error | Description |
+|------|-------|-------------|
+| 0 | Success | Records deleted |
+| 1 | NOT_IMPL | Provider not implemented |
+| 1 | AWS_NO_BOTO3 | boto3 not installed |
+| 1 | NO_RR | No records found in zone |
+| 1 | NO_HEAD_REC | Header record not found |
+| 2 | INV_ARG | Invalid arguments |
+
+### Common Errors
+
+**Header record not found**:
+- Verify the header record name is correct
+- Check if records were already deleted
+- Confirm zone ID is correct
+
+**boto3 not installed**:
+```bash
+pip3 install boto3
+```
+
+**Permission denied**:
+- Verify IAM role has `route53:ChangeResourceRecordSets`
+- Check AWS credentials are configured
+
+**No records in zone**:
+- Zone ID may be incorrect
+- Records may have already been deleted
+- Check AWS Route53 console
+
+## Provider Hooks
+
+### AWS Route53
+
+Requires:
+- AWS credentials configured (`~/.aws/credentials` or environment)
+- `boto3` Python library
+- IAM permissions for Route53 deletions
+
+```bash
+export AWS_PROFILE=myprofile
+proone-txtrec-del --hook aws --zone-id Z123... --head-rec cnc.domain
+```
+
+### Custom Providers
+
+Extend error handling and add provider functions:
+```python
+def main_custom(param: dict):
+    # Implement custom DNS provider deletion logic
+    pass
+```
+
+## Safety Features
+
+- **Validation**: Verifies header record exists before attempting deletion
+- **Batch Operations**: Atomic deletion of all related records
+- **Error Messages**: Clear feedback on what went wrong
+- **No Wildcards**: Only deletes specifically identified records
+
+## Security Considerations
+
+<Note>
+  Deletion is permanent and cannot be undone. Ensure you have backups of important DNS configurations before running deletion commands.
+</Note>
+
+- **Permanent Operation**: Deleted records cannot be recovered
+- **Zone-wide Impact**: Affects all instances querying these records
+- **DNS Propagation**: Changes propagate within minutes
+- **Access Control**: Limit who can run deletion operations
+
+## Performance Notes
+
+- **DNS Propagation**: Deletions propagate in seconds to minutes
+- **Batch API**: Single API call for all records (efficient)
+- **Rate Limits**: AWS Route53 has API rate limits
+- **Cache TTL**: Clients may cache old records until TTL expires
+
+## Verification
+
+### Confirm Deletion
+
+```bash
+# Check if header record exists
+dig TXT cnc.example.com @8.8.8.8
+
+# Check if data records exist
+dig TXT 00000000.data.example.com @8.8.8.8
+```
+
+Successful deletion returns:
+```
+;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN
+```
+
+### Monitor Propagation
+
+```bash
+# Check multiple DNS servers
+for ns in 8.8.8.8 1.1.1.1 9.9.9.9; do
+  echo "Checking $ns:"
+  dig TXT cnc.example.com @$ns +short
+done
+```
+
+## Related Tools
+
+- [proone-txtrec-set](/tools/proone-txtrec-set) - Create TXT REC CNC records
+- [proone-htbthost](/tools/proone-htbthost) - Test CNC mechanism
+- [TXT REC CNC](/protocols/heartbeat/txt-rec-cnc) - Protocol specification
+
+## Implementation Details
+
+From `proone-txtrec-del`:
+- Regex-based header parsing
+- Enumerates data records by count
+- Uses AWS Route53 batch delete API
+- Validates records before deletion
+- Provides detailed error messages
+
+## Source Reference
+
+**File**: `~/workspace/source/src/proone-txtrec-del` (Python script)
+
+**Module**: `~/workspace/source/src/prne_txtrec.py` (shared utilities)
+
+**Lines**: ~150 (deletion logic + error handling)
