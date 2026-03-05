@@ -1,0 +1,147 @@
+{
+  "projectType": "general",
+  "projectName": "Proone",
+  "projectDescription": "A Linux worm targeting vulnerable IoT devices with MMU, reengineered from Mirai botnet",
+  "theme": "aspen",
+  "primaryColor": "#642c2c",
+  "lightColor": "#b29898",
+  "darkColor": "#d3c5c5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "foreword",
+              "security-notice"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/subsystems",
+              "architecture/design-decisions"
+            ]
+          },
+          {
+            "group": "Core Subsystems",
+            "pages": [
+              "subsystems/heartbeat",
+              "subsystems/recon",
+              "subsystems/bne",
+              "subsystems/resolv"
+            ]
+          },
+          {
+            "group": "Binary System",
+            "pages": [
+              "binary/data-vault",
+              "binary/binary-archive",
+              "binary/recombination"
+            ]
+          },
+          {
+            "group": "Build & Deploy",
+            "pages": [
+              "build/building",
+              "build/configuration",
+              "build/cross-compilation"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Tools",
+        "groups": [
+          {
+            "group": "Main Executables",
+            "pages": [
+              "tools/proone",
+              "tools/proone-bne",
+              "tools/proone-hostinfod",
+              "tools/proone-htbtclient"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "tools/proone-recon",
+              "tools/proone-resolv",
+              "tools/proone-pack",
+              "tools/proone-mkcdict",
+              "tools/proone-mkdvault"
+            ]
+          },
+          {
+            "group": "Testing",
+            "pages": [
+              "tools/test-suite"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Protocols",
+        "groups": [
+          {
+            "group": "Heartbeat Protocol",
+            "pages": [
+              "protocols/heartbeat/overview",
+              "protocols/heartbeat/framing",
+              "protocols/heartbeat/txt-rec-cnc"
+            ]
+          },
+          {
+            "group": "Data Formats",
+            "pages": [
+              "protocols/data-formats"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Development",
+        "groups": [
+          {
+            "group": "Implementation",
+            "pages": [
+              "development/memory-management",
+              "development/resource-allocation",
+              "development/notes"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Self-contained breaking and entering with brute force and exploit vectors",
+    "IPv6 support for network scanning and connectivity",
+    "DNS over TLS (DoT) for CNC using TXT records",
+    "Binary recombination for cross-architecture propagation",
+    "Multi-subsystem architecture (Heartbeat, Recon, BNE, Resolv)",
+    "Data Vault for sensitive data masking",
+    "Binary Archive carrying executables for multiple architectures",
+    "Cooperative multitasking using GNU Pth",
+    "Ephemeral presence with memory-only file system usage",
+    "Raw socket packet crafting for network reconnaissance"
+  ],
+  "publicApiSurface": [
+    "proone - Main worm executable",
+    "proone-bne - Standalone breaking and entering tool",
+    "proone-hostinfod - Hostinfo daemon (authoritative heartbeat)",
+    "proone-htbtclient - Heartbeat client maintenance tool",
+    "proone-recon - Standalone reconnaissance tool",
+    "proone-resolv - Standalone DNS resolver tool",
+    "proone-pack - Binary archive build tool",
+    "proone-mkcdict - Credential dictionary builder",
+    "proone-mkdvault - Data Vault binary builder",
+    "proone-htbthost - Standalone heartbeat worker",
+    "proone-txtrec-set - TXT REC CNC setup tool",
+    "proone-txtrec-del - TXT REC CNC deletion tool"
+  ]
+}
