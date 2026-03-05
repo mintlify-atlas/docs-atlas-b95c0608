@@ -1,0 +1,277 @@
+---
+title: Binary Archive
+description: Cross-architecture executable storage and indexing for decentralized propagation
+---
+
+## Overview
+
+The **Binary Archive** (BA) is a compressed binary block containing executables for multiple operating systems and CPU architectures. This enables Proone to be a **decentralized botnet** - each instance carries all supported binaries and can infect hosts of different architectures without external distribution servers.
+
+## Structure
+
+### Archive Format
+
+The Binary Archive consists of two parts:
+
+```
+┌─────────────────────────────────────┐
+│ HEADER (8 bytes)                    │
+│  ┌──────────────────────────────┐   │
+│  │ Magic: "PNBA"     (4 bytes) │   │
+│  │ Reserved          (1 byte)   │   │
+│  │ Revision: 0x00    (1 byte)   │   │
+│  │ Entry count       (2 bytes BE)│  │
+│  └──────────────────────────────┘   │
+├─────────────────────────────────────┤
+│ INDEX TABLE (8 bytes × entry count) │
+│  ┌──────────────────────────────┐   │
+│  │ Reserved          (2 bytes)  │   │
+│  │ OS code           (1 byte)   │   │
+│  │ Arch code         (1 byte)   │   │
+│  │ Reserved          (1 byte)   │   │
+│  │ Size              (3 bytes BE)│  │
+│  └──────────────────────────────┘   │
+│  ... (repeated for each entry)      │
+├─────────────────────────────────────┤
+│ COMPRESSED DATA STREAM              │
+│  (zlib compressed concatenated ELFs)│
+└─────────────────────────────────────┘
+```
+
+### Magic Identifier
+
+From `src/pack.c:82-86`:
+
+```c
+if (memcmp(
+    data,
+    PRNE_PACK_BA_IDEN_DATA,  // "PNBA" magic
+    sizeof(PRNE_PACK_BA_IDEN_DATA)) != 0)
+{
+    ret = PRNE_PACK_RC_FMT_ERR;
+}
+```
+
+### Revision Field
+
+The revision byte (offset 5) must be `0x00` for current version:
+
+```c
+// From src/pack.c:90-93
+if (data[5] != 0) {
+    ret = PRNE_PACK_RC_UNIMPL_REV;
+    goto END;
+}
+```
+
+## Index Structure
+
+Each index entry is **8 bytes** and describes one executable in the archive:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0-1 | 2 | Reserved | Must be 0x0000 |
+| 2 | 1 | OS | Operating system code (e.g., Linux) |
+| 3 | 1 | Arch | CPU architecture code |
+| 4 | 1 | Reserved | Must be 0x00 |
+| 5-7 | 3 | Size | Uncompressed size (big-endian, max 16MB) |
+
+### Index Parsing
+
+From `src/pack.c:109-116`:
+
+```c
+for (i = 0; i < nb_bin; i += 1) {
+    bin[i].host.os = (prne_os_t)data[2];
+    bin[i].host.arch = (prne_arch_t)data[3];
+    bin[i].size = prne_recmb_msb32(0, data[5], data[6], data[7]);
+    sum += bin[i].size;
+    data += 8;
+    len -= 8;
+}
+```
+
+## Data Structures
+
+### Binary Host Identifier
+
+```c
+typedef struct {
+    prne_os_t os;      // Operating system
+    prne_arch_t arch;  // CPU architecture
+} prne_bin_host_t;
+```
+
+### Binary Archive Object
+
+```c
+// From pack.h
+typedef struct {
+    prne_bin_tuple_t *bin;  // Array of index entries
+    size_t nb_bin;          // Number of entries
+    const uint8_t *data;    // Pointer to compressed data
+    size_t data_size;       // Size of compressed data
+} prne_bin_archive_t;
+```
+
+### Binary Tuple (Index Entry)
+
+```c
+typedef struct {
+    prne_bin_host_t host;  // OS + Architecture
+    size_t size;           // Uncompressed size in bytes
+} prne_bin_tuple_t;
+```
+
+## API Usage
+
+### Parsing Binary Archive
+
+```c
+// From src/pack.c:72-128
+prne_pack_rc_t prne_index_bin_archive (
+    const uint8_t *data,
+    size_t len,
+    prne_bin_archive_t *out)
+```
+
+**Steps**:
+1. Verify magic identifier ("PNBA")
+2. Check revision is 0x00
+3. Parse entry count (big-endian uint16)
+4. Allocate index array
+5. Parse each 8-byte index entry
+6. Set data pointer to compressed stream
+
+**Return codes**:
+- `PRNE_PACK_RC_OK` - Success
+- `PRNE_PACK_RC_FMT_ERR` - Invalid format or corrupt data
+- `PRNE_PACK_RC_UNIMPL_REV` - Unsupported revision
+- `PRNE_PACK_RC_ERRNO` - Memory allocation failure
+
+### Finding a Binary
+
+```c
+// Example: Locate executable for target architecture
+prne_bin_tuple_t *find_binary(
+    prne_bin_archive_t *ba,
+    prne_bin_host_t *target)
+{
+    size_t offset = 0;
+    for (size_t i = 0; i < ba->nb_bin; i++) {
+        if (prne_eq_bin_host(&ba->bin[i].host, target)) {
+            // Binary found at offset in decompressed stream
+            return &ba->bin[i];
+        }
+        offset += ba->bin[i].size;
+    }
+    return NULL;  // Not found
+}
+```
+
+## Cross-Architecture Support
+
+### Supported Platforms
+
+Proone supports multiple architecture families:
+
+**x86 Family**:
+- `PRNE_ARCH_X86_64` - 64-bit x86
+- `PRNE_ARCH_I686` - 32-bit x86
+
+**ARM Family**:
+- `PRNE_ARCH_AARCH64` - 64-bit ARM
+- `PRNE_ARCH_ARMV7` - 32-bit ARMv7
+- `PRNE_ARCH_ARMV4T` - 32-bit ARMv4T (legacy)
+
+**Other**:
+- `PRNE_ARCH_SH4` - SuperH SH-4
+- `PRNE_ARCH_MIPS` - MIPS (big-endian)
+- `PRNE_ARCH_MPSL` - MIPS (little-endian)
+- `PRNE_ARCH_PPC` - PowerPC
+- `PRNE_ARCH_M68K` - Motorola 68000
+
+### Architecture Compatibility
+
+Proone supports fallback to compatible architectures when exact match isn't found:
+
+```c
+// From src/pack.c:668-689
+const prne_arch_t *prne_compat_arch (const prne_arch_t target) {
+    static const prne_arch_t F_X86[] = {
+        PRNE_ARCH_X86_64,
+        PRNE_ARCH_I686,
+        PRNE_ARCH_NONE  // Sentinel
+    };
+    static const prne_arch_t F_ARM[] = {
+        PRNE_ARCH_AARCH64,
+        PRNE_ARCH_ARMV7,
+        PRNE_ARCH_ARMV4T,
+        PRNE_ARCH_NONE
+    };
+
+    switch (target) {
+    case PRNE_ARCH_X86_64: return F_X86;
+    case PRNE_ARCH_I686: return F_X86 + 1;
+    case PRNE_ARCH_AARCH64: return F_ARM;
+    case PRNE_ARCH_ARMV7: return F_ARM + 1;
+    case PRNE_ARCH_ARMV4T: return F_ARM + 2;
+    }
+    return NULL;
+}
+```
+
+**Example**: When targeting ARMv7, try in order:
+1. ARMv7 (exact match)
+2. ARMv4T (backward compatible)
+
+## Compression
+
+The Binary Archive uses **zlib compression** with configurable level:
+
+```c
+#define PRNE_PACK_Z_LEVEL 9  // Maximum compression
+```
+
+### Compression Strategy
+
+All executables are **concatenated then compressed as a single stream**. This maximizes compression efficiency by allowing the dictionary to span across binaries.
+
+**Trade-off**: Extracting one binary requires decompressing from the start up to that binary's offset.
+
+### Why Single Stream?
+
+From the design spec (lines 231-232):
+
+> "The compressed stream of executable is uncompressed and compressed again each time a true binary recombination occurs. This is to maximise the entropy and avoid the overhead from having many streams."
+
+## Size Considerations
+
+**Maximum entry size**: 16,777,215 bytes (3-byte size field)
+
+**Typical sizes**:
+- Small embedded executable: 50-200 KB compressed
+- Full Proone executable: 500 KB - 2 MB per architecture
+- Complete archive (8-10 architectures): 5-15 MB compressed
+
+<Warning>
+  Binary Archive size directly impacts infection speed. Each infected host must upload the complete archive to new targets. Consider targeting memory-backed filesystems (tmpfs, devtmpfs) which are typically larger than flash storage on embedded devices.
+</Warning>
+
+## Build Tools
+
+Binary archives are generated using `proone-pack`:
+
+```bash
+# Pack multiple ELF files into binary archive
+proone-pack -o archive.bin \
+    linux-armv4t.elf \
+    linux-mips.elf \
+    linux-x86_64.elf
+```
+
+## Source Files
+
+- `src/pack.h` - Binary Archive API definitions
+- `src/pack.c:72` - Archive indexing implementation
+- `src/proone-pack.c` - Archive build tool

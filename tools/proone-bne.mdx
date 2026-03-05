@@ -1,0 +1,113 @@
+---
+title: proone-bne
+description: Standalone break-and-enter testing tool
+---
+
+# proone-bne
+
+Standalone tool for testing the BNE (Break and Enter) subsystem functionality.
+
+## Overview
+
+proone-bne is a testing and deployment tool that implements the BNE worker functionality independently from the main Proone executable. It can be used to test credential dictionaries, binary deployment, and exploitation vectors.
+
+## Usage
+
+```bash
+proone-bne <options> <target> [more targets ...]
+```
+
+### Options
+
+- `--cdict <PATH>`: Path to credential dictionary (required)
+- `--nybin <PATH>`: Path to nybin format binary (required)
+- `--vercmp <INT>`: Version comparison callback return value
+  - Negative: Get binary from target
+  - Positive: Update binary on target
+  - Zero: Disable M2M binary update (default)
+
+### Targets
+
+Targets are specified as IPv4 or IPv6 addresses:
+
+```bash
+# IPv4
+proone-bne --cdict cred.bin --nybin proone.nybin 192.168.1.100
+
+# IPv6 with scope ID
+proone-bne --cdict cred.bin --nybin proone.nybin fe80::1%eth0
+proone-bne --cdict cred.bin --nybin proone.nybin [fe80::1%2]
+```
+
+Scope IDs can be specified as interface names or numeric values.
+
+## Attack Vectors
+
+The tool supports multiple attack vectors:
+
+1. **HTBT (Heartbeat)**: Attempts M2M connection to Proone instances
+2. **Brute Force Telnet**: Dictionary-based Telnet login
+3. **Brute Force SSH**: Dictionary-based SSH login using libssh2
+
+## Output
+
+The tool outputs results for each target including:
+
+- Subject IP address
+- Error code
+- Successful vector used
+- Whether a new instance was deployed
+- Credentials that succeeded (if applicable)
+- Process return code
+- Target host architecture
+- Binary architecture used
+
+### Example Output
+
+```
+- result:
+	subject: 192.168.1.100
+	err: 0
+	vector: BRUTE_TELNET
+	ny_instance: true
+	cred:
+		id: admin
+		pw: admin
+	prc: 0
+	host arch: armv4t
+	bin arch: armv4t
+```
+
+## M2M Binary Update
+
+When `--vercmp` is used with non-zero values:
+
+- Connects to running Proone instances via the Heartbeat protocol
+- Compares version UUIDs
+- Performs binary recombination if needed
+- Upgrades or downgrades the target instance
+
+## Resource Requirements
+
+- Requires TLS certificates (compiled into the binary)
+- Needs credential dictionary in binary format
+- Requires nybin format binary with DVault and Binary Archive
+
+## Implementation Notes
+
+- Uses GNU Pth for cooperative multitasking
+- Spawns one BNE worker per target
+- All workers run in parallel (cooperatively)
+- Temporary files are named `bne-tmp.<counter>`
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success |
+| 1 | Runtime error |
+| 2 | Invalid arguments |
+
+## Source
+
+Location: `src/proone-bne.c`

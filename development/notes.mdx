@@ -1,0 +1,351 @@
+---
+title: Developer Notes
+description: Implementation notes, debugging tips, known issues, and development insights for Proone
+---
+
+## Debugging
+
+### Capabilities
+
+Both gdb and the executable being debugged must have `CAP_NET_RAW` set for BNE (Binary Network Exploitation) to work properly.
+
+```bash
+# Set capabilities for gdb
+sudo setcap cap_net_raw+ep /usr/bin/gdb
+
+# Set capabilities for your executable
+sudo setcap cap_net_raw+ep ./proone
+```
+
+## Platform-Specific Behaviors
+
+### Erasing Command-Line Arguments
+
+Proone instance processes may look suspicious because the cmdline string contains long base64 strings. Modification of cmdline is platform-specific.
+
+**Linux:**
+Zero-fill all `main()` argv elements after index 0, as per `ps(1)`:
+
+> command with all its arguments as a string. Modifications to the arguments may be shown.
+
+This allows Proone to hide its command-line arguments from process listings after startup.
+
+### Querying Link-Local Addresses
+
+**Linux:** Use `getifaddrs(3)` to query link-local addresses.
+
+## Known Issues and Bugs
+
+### Musl SOCKETCALL Bug
+
+In early development, Musl was considered for the libc implementation due to its benefits over uClibc. However, development encountered a critical bug:
+
+- **Issue:** [Musl SOCKETCALL bug](https://www.openwall.com/lists/musl/2020/08/03/6)
+- **Resolution:** Abandoned Musl immediately after discovery
+- **Current:** Using alternative libc implementations
+
+### Mbed TLS getrandom() Blocks
+
+**Issue:** [Mbed TLS #3551](https://github.com/ARMmbed/mbedtls/issues/3551)
+
+Mbed TLS uses `getrandom()` to initialize CTR_DRBG contexts. On systems where the function is not available, the library falls back to `/dev/urandom`, which never blocks. This contrasts with the blocking behavior of `getrandom()`.
+
+**Solution:**
+Implemented `prne_mbedtls_entropy_init()` to modify the factory function for creating CTR_DRBG contexts so the library always uses `/dev/urandom`.
+
+```c
+// Implementation prioritizes availability over cryptographic perfection
+// Acceptable for Proone's use case (hiding characteristics, not protecting secrets)
+ssize_t prne_geturandom(void *buf, const size_t len) {
+  const int fd = open("/dev/urandom", O_RDONLY);
+  ssize_t ret;
+  int save_errno;
+  
+  if (fd < 0) {
+    return -1;
+  }
+  ret = read(fd, buf, len);
+  save_errno = errno;
+  close(fd);
+  errno = save_errno;
+  
+  return ret;
+}
+```
+
+**Note:** This would be unacceptable if Proone handled sensitive data, but the main purpose of TLS is to hide traffic characteristics from law enforcement and ISPs.
+
+### Pthsem's Improper Use of FD_SET()
+
+Calling `FD_SET()` with a negative fd value is undefined behavior. Pthsem uses `select()` for internal scheduling and doesn't check fd values in `pth_poll()`.
+
+**Problem:**
+Calling `pth_poll()` with `pollfd` containing negative fds results in undefined behavior because values are propagated to `FD_SET()`. uClibc crashes with SIGBUS, while Glibc on x86 handles it gracefully.
+
+**Solution:**
+Implemented `prne_pth_poll()` which transparently filters out `pollfd` elements with negative fd values before passing to `pth_poll()`.
+
+```c
+// Wrapper that filters invalid fds
+int prne_pth_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+  // Filter out negative fds before calling pth_poll()
+  // Implementation details in util_rt.c
+}
+```
+
+## Optimization Opportunities
+
+### Use Lightweight Crypto
+
+RSA keys are at least 2048 bits long, increasing executable size. Consider using elliptic-curve based alternatives to reduce binary size.
+
+**Potential savings:**
+- Smaller key sizes with equivalent security
+- Faster operations on embedded devices
+- Reduced memory footprint
+
+### Put Mbed TLS on Diet
+
+The build is not lightweight because Mbed TLS library is extensive. Proone is tested using default Mbed TLS config included in Buildroot, but size reduction may be achieved by disabling unnecessary features:
+
+**Features to disable:**
+- Threading support
+- DTLS (Datagram TLS)
+- TLS Renegotiation
+- ZLIB compression
+
+### Don't Build Clean-up Code
+
+Disabling clean-up code for release builds is a widely accepted technique to reduce code size.
+
+**Rationale:**
+- Proone does not expect user intervention
+- SIGINT handling is for debugging purposes only
+- Removing signal handling provides additional size reduction
+
+**Implementation:**
+```c
+#ifndef RELEASE_BUILD
+  // Clean-up code only in debug builds
+  signal(SIGINT, cleanup_handler);
+#endif
+```
+
+### Using SSH Subchannel for Binary Transfer
+
+Data transfer over SSH sessions can be optimized by using separate SSH channels.
+
+**Current method:**
+Uses commands like `echo` and `base64` available on the host. This is slow and expensive, even for regular PCs, but it's the only feasible method for telnet connections.
+
+**Proposed optimization for SSH:**
+Once command availability is checked, open a separate channel for data transfer:
+
+```bash
+# Direct binary transfer
+ssh user@host "cat > file" < file
+
+# Or compressed
+gzip -c file | ssh user@host "gzip -cd > file"
+```
+
+**Benefits:**
+- Significantly faster transfers
+- Lower CPU usage
+- No encoding overhead
+
+## Threading Model
+
+### Cooperative vs. Preemptive Threading
+
+Proone employs **cooperative threading** to:
+- Limit execution to one physical thread
+- Ease programming complexity
+
+**Rationale:**
+Majority of embedded devices (especially vulnerable ones) have one physical thread, so there's no benefit from preemptive threading.
+
+### Switching to Real Threads?
+
+**Potential benefits:**
+- Multithread embedded devices could benefit from reduced context switching
+- Regular PCs could easily run 100+ BNE workers in parallel
+
+**Original plan:**
+Implement both cooperative and preemptive threading using C macros. You'll find some condition variables and locks for this purpose in the resolv implementation.
+
+**Current status:**
+Idea was abandoned. Should you switch to real threads, **expect race condition bugs**.
+
+**Trade-offs:**
+- Need to limit thread count (worst case: large number of BNE workers)
+- Increased complexity in synchronization
+- Potential for deadlocks and race conditions
+
+## Architecture Notes
+
+### ARM Architecture Assignments
+
+Codes are assigned for architectures with major changes per "industry standard":
+
+**ARMV4T:**
+- First and oldest architecture Linux supports
+- Thumb variant chosen (almost all ARM CPUs run Linux with Thumb enabled)
+
+**ARMV7:**
+- Major improvements: hardware floating point (hfp)
+
+**AARCH64:**
+- More hfp registers
+- 64-bit address space
+- Note: 64-bit kernel requires `CONFIG_COMPAT` to run 32-bit executables
+- Assumed most AARCH64 devices have `CONFIG_COMPAT` enabled (no major penalty)
+
+### Extinct Architectures
+
+Proone recognizes architectures that have gone "extinct":
+
+**SH4:**
+- Defined to honor Mirai's choice of architectures
+- No longer prevalent in embedded devices
+
+**PPC and SPARC:**
+- Lack prevalence in embedded devices
+- SPARC not assigned but was targeted by Mirai
+
+**ARC:**
+- Supported by Linux kernel
+- No actual products powered by ARC run Linux
+
+## Security and Evasion
+
+### Evading Packet Sniffing
+
+Lawful interception is conducted in most countries. Law enforcement uses malware characteristics to filter traffic.
+
+**Proone's Observable Characteristics:**
+
+1. **SYN packets to remote port 64420** (in ephemeral port range)
+2. **ALPN string "prne-htbt"** in TLS hello messages
+3. **Client and server certificates** in TLS hello messages
+4. **Crafted SYN packets followed by RST packets** if remote port is open
+5. **Bogus ICMPv6 packets** multicast to link-local network
+
+**Mitigation Strategies:**
+
+```c
+// Disable ALPN (don't set ALPN list)
+// Don't call mbedtls_ssl_conf_alpn_protocols()
+
+// Change heartbeat port (regenerate PKI)
+#define PRNE_HTBT_PORT 12345  // Instead of 64420
+
+// Use different certificates
+// Regenerate PKI with different parameters
+```
+
+**Note:** Most characteristics can be changed by regenerating PKI or using different ports.
+
+### Risky Binary Upgrade
+
+From `execve(2)` man page:
+
+> In most cases where execve() fails, control returns to the original executable image, and the caller of execve() can then handle the error. However, in (rare) cases (typically caused by resource exhaustion), failure may occur past the point of no return: the original executable image has been torn down, but the new image could not be completely built. In such cases, the kernel kills the process with a SIGSEGV (SIGKILL until Linux 3.17) signal.
+
+**Risk:**
+Binary upgrade via `exec()` from main process can result in loss of control over hosts.
+
+**Justification:**
+Acceptable risk because the host doesn't have to maintain both old and new images. **Memory is a scarce commodity on embedded devices!**
+
+## Ephemeral Presence
+
+Making a Linux virus "permanent" faces many challenges:
+
+### Challenges
+
+1. **No unified startup system**
+   - Multiple init implementations: Sys V, Systemd, Buildroot, OpenWrt
+   - Many are shell script based with slight differences
+
+2. **Root filesystem overlays**
+   - Possible to overlay root with ramdisk
+   - Changes lost after reboot
+
+3. **Battery-backed volatile memory**
+   - Some devices use volatile memory for frequently changing files
+   - Appears as normal block devices (mtd/ide/scsi/nvme)
+   - Contents lost on power loss
+
+### Philosophy
+
+**It's not worth it.**
+
+People rarely do routine hardware resets of embedded devices, especially poorly made products. Even if they do, other instances on the network can reinfect the device.
+
+## Lineage Tracing
+
+`org_id` and `instance_id` can be used to trace instance lineage.
+
+### With proone-hostinfod
+
+1. Collect host info from instances
+2. Analyze collected data
+3. Build family tree tracing back to instances with zeroed-out `org_id`
+
+### Visualization
+
+Write a simple script to output visual representation:
+
+```python
+# Example: Generate PlantUML diagram
+def build_family_tree(instances):
+    tree = "@startuml\n"
+    for instance in instances:
+        if instance.parent_id:
+            tree += f"{instance.parent_id} --> {instance.instance_id}\n"
+    tree += "@enduml"
+    return tree
+```
+
+## Ideas for Future Development
+
+### "Organic" Credential Dictionary
+
+Rather than relying solely on the cred dict, program instances to try randomly generated combos.
+
+**Concept:**
+1. Try a few random combos before cred dict
+2. If random combo works, save it in memory
+3. During htbt m2m (machine-to-machine), exchange saved combos
+4. If both parties found same combo, add to cred dict with lowest weight
+5. If combo exists, increment weight value
+
+**Requirements:**
+- Instance ability to manipulate cred dict (stored in dvault)
+- Additional code size
+
+**Challenges:**
+- Chance of getting random combo is slim
+- Two instances getting same combo and exchanging is even slimmer
+
+**Screening rationale:**
+Well-designed devices ship with randomly generated default credentials. The screening process filters credentials from these devices.
+
+**Trade-off question:**
+Would the benefit justify the code size increase?
+
+## Best Practices from Experience
+
+1. **Test on target platforms** - Don't assume standard library behavior
+2. **Check all fds** - Negative fds can cause undefined behavior
+3. **Use framework wrappers** - `prne_pth_poll()` instead of `pth_poll()`
+4. **Read /dev/urandom directly** - Avoid `getrandom()` blocking issues
+5. **Profile on embedded devices** - Performance characteristics differ significantly
+6. **Consider memory constraints** - Embedded devices have very limited RAM
+7. **Plan for failure** - Resource exhaustion is common on embedded systems
+
+## See Also
+
+- [Memory Management](/development/memory-management) - Framework allocation functions
+- [Resource Allocation](/development/resource-allocation) - Ownership patterns and structures

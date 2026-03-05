@@ -1,0 +1,117 @@
+---
+title: proone
+description: Main Proone worm executable
+---
+
+# proone
+
+The main Proone worm executable implementing the full botnet functionality.
+
+## Overview
+
+Proone is the core executable that runs on infected hosts. It operates as a self-contained botnet node with multiple worker subsystems running cooperatively via GNU Pth (Portable Threads).
+
+## Features
+
+### Worker Subsystems
+
+Proone consists of four main worker subsystems:
+
+- **Recon Worker**: Discovers hosts on the internet and link-local networks
+- **BNE Worker**: Breaks into discovered hosts using credential dictionaries and exploits
+- **Resolv Worker**: Custom DNS resolver for TXT REC CNC communication
+- **Heartbeat Worker**: Provides backdoor access and CNC communication
+
+### Binary Recombination
+
+Proone carries executables for multiple architectures in a compressed Binary Archive. When it infects a target host:
+
+1. Extracts the appropriate executable for the target's architecture
+2. Appends the Data Vault (DVault) containing configuration and credentials
+3. Generates a new Binary Archive including the host's executable
+
+See the [Architecture](/architecture/binary-recombination) documentation for details.
+
+### Data Vault (DVault)
+
+DVault is a binary block containing masked sensitive data:
+
+- X.509 certificates and keys
+- Credential dictionaries
+- DNS server pools
+- Network targets and blacklists
+- CNC TXT record domain
+
+The data is XORed with a 256-byte random mask generated at compile time to prevent easy analysis.
+
+## Usage
+
+```bash
+./proone [host_credential] [org_id]
+```
+
+### Arguments
+
+- `host_credential` (optional): Base64-encoded host credential
+- `org_id` (optional): Base64-encoded organization ID
+
+## Process Model
+
+Proone uses a parent-child process model:
+
+1. **Parent Process**: Monitors the child and handles restarts
+2. **Child Process**: Runs the actual worker subsystems
+
+The parent process:
+- Forks the child process on startup
+- Monitors child process status
+- Restarts the child if it crashes
+- Handles binary upgrades via `exec()`
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Normal exit |
+| 1 | Failed to acquire lock (another instance running) |
+
+## Security Features
+
+### Ephemeral Presence
+
+- Deletes its own executable on startup (non-debug builds)
+- Uses only memory-backed filesystems (tmpfs, devtmpfs) for temporary files
+- Leaves no traces on non-volatile storage
+
+### Anti-Analysis
+
+- DVault data is masked to prevent string analysis
+- Disables hardware watchdog timers
+- Cooperative multitasking limits to single thread
+
+## Instance Detection
+
+Proone uses a shared memory region to detect other instances:
+
+1. Hashes: salt value + boot ID + hostname
+2. Attempts to create and lock shared memory with the hash as name
+3. If lock fails, another instance is running and the process exits
+
+## Resource Management
+
+Proone is designed to run lean:
+
+- Uses cooperative multitasking (GNU Pth) instead of native threads
+- Compartmentalized initialization allows partial functionality if resources are scarce
+- Does not retry failed worker initialization
+- Maximum 128 concurrent BNE workers (`PROONE_BNE_MAX_CNT`)
+
+## Source
+
+Location: `src/proone.c`
+
+Key functions:
+- `proone_main()`: Main worker loop
+- `init_shared_global()`: Instance detection and shared memory
+- `alloc_workers()`: Initialize worker subsystems
+- `cb_recon_evt()`: Callback when Recon discovers a host

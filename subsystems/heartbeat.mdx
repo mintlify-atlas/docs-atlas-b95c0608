@@ -1,0 +1,225 @@
+---
+title: 'Heartbeat Subsystem'
+description: 'Command and control mechanism using the Heartbeat protocol'
+---
+
+The **Heartbeat** subsystem is the command and control (C&C) mechanism of Proone. It consists of a backdoor and CNC functionality that operates on infected devices through the Heartbeat protocol.
+
+## Overview
+
+The Heartbeat protocol is a point-to-point or broadcast framing protocol that works over transport streams such as TCP/IP. It enables:
+
+- Remote command execution
+- Binary upgrades
+- Host information retrieval
+- Machine-to-machine (M2M) communication
+- DNS TXT record-based control
+
+## Architecture
+
+The subsystem runs as a worker thread and consists of three main components:
+
+### Main Thread (HTBT_MAIN)
+
+Handles authoritative host connections and processes request queues. Manages hover requests and maintains connection state.
+
+```c src/htbt.c
+struct prne_htbt {
+    prne_htbt_param_t param;
+    pth_mutex_t lock;
+    pth_cond_t cond;
+    bool loop_flag;
+    struct {
+        prne_llist_t req_q;      // Request queue for HOVER
+        prne_llist_t hover_req;  // HOVER tracers
+        pth_mutex_t lock;
+        pth_cond_t cond;
+    } main;
+    // ...
+};
+```
+
+### Local Backdoor (LBD)
+
+Listens on port 64420 (default) for incoming M2M connections. Provides maintenance access to running instances.
+
+```c src/htbt.c
+struct {
+    pth_t pth;
+    prne_llist_t conn_list;
+    int fd;
+} lbd;
+```
+
+### CNC Probe Worker (CNCP)
+
+Periodically queries DNS TXT records for commands. The interval is 1800±1800 seconds (30-60 minutes).
+
+```c src/htbt.c
+struct {
+    char txtrec[256];
+    pth_t pth;
+    pth_mutex_t lock;
+    pth_cond_t cond;
+} cncp;
+```
+
+## Protocol Features
+
+### TLS Security
+
+Both client and server implementations use mutual TLS authentication:
+
+- Two-way certificate verification
+- ALPN string "prne-htbt" for endpoint validation
+- Hardcoded CA cert, DH parameters, and key pairs
+
+### Session Management
+
+A session consists of:
+
+1. **Message Header Frame**: Contains message ID and operation code
+2. **Data Frames**: Depends on the operation type
+3. **Status/Response Frames**: Confirms operation completion
+
+<Info>
+All messages in a session share the same message ID. The special ID `0x7FFF` indicates a notification session requiring no response.
+</Info>
+
+## Operation Codes
+
+| Code | Name | Description |
+|------|------|-------------|
+| `0x00` | NOOP | No operation (keepalive) |
+| `0x01` | STATUS | Status response |
+| `0x02` | HOST_INFO | Request/response host information |
+| `0x03` | HOVER | Hand-over to another host |
+| `0x04` | SOLICIT | Request instructions |
+| `0x05` | RUN_CMD | Execute command |
+| `0x06` | UP_BIN | Binary upgrade |
+| `0x07` | RUN_BIN | Execute binary |
+| `0x08` | STDIO | Standard I/O data |
+| `0x09` | RCB | Binary recombination |
+
+## TXT Record CNC
+
+Unlike conventional botnets, Proone instances are controlled via DNS TXT records:
+
+### Record Format
+
+The header record follows the pattern: `([0-9a-fA-F]{8})(.*)`
+
+- First 8 hex digits: Number of data records
+- Remaining string: Suffix for data record names
+
+### Example
+
+For header record value `00000003.cnc.test`, the worker queries:
+```
+00000000.cnc.test
+00000001.cnc.test  
+00000002.cnc.test
+```
+
+<Warning>
+TXT records contain base64-encoded binary data. Only public DNS over TLS servers are used to prevent traffic interception.
+</Warning>
+
+## M2M Communication
+
+Instances check if target hosts are already infected by connecting to the local backdoor:
+
+1. Attempt connection to port 64420
+2. Perform TLS handshake with certificate verification
+3. Check ALPN string for "prne-htbt"
+4. Query version and upgrade if necessary
+
+### Binary Upgrade Process
+
+```c src/htbt.c
+static bool htbt_slv_srv_bin(
+    htbt_slv_ctx_t *ctx,
+    const uint16_t corr_id,
+    const prne_htbt_op_t op)
+{
+    // Binary metadata reception
+    if (!htbt_slv_recv_frame(
+            ctx,
+            &bin_meta,
+            (prne_htbt_dser_ft)prne_htbt_dser_bin_meta,
+            &corr_id,
+            true,
+            ev))
+    {
+        goto END;
+    }
+    
+    // Create temporary file
+    fd = ctx->cbset->tmpfile(
+        ctx->cb_ctx,
+        O_CREAT | O_TRUNC | O_WRONLY | O_EXCL,
+        0700,
+        bin_meta.alloc_len,
+        &path);
+    // ...
+}
+```
+
+## Implementation Details
+
+### Timeouts
+
+```c src/htbt.c
+static const struct timespec HTBT_SLV_SCK_OP_TIMEOUT = { 10, 0 };  // 10s
+static const struct timespec HTBT_RELAY_CHILD_TIMEOUT = { 60, 0 }; // 60s
+static const struct timespec HTBT_DL_TICK_TIMEOUT = { 30, 0 };     // 30s
+```
+
+### Lock Matrix
+
+Prevents concurrent operations that could conflict:
+
+```c src/htbt.c
+struct {
+    pth_mutex_t lock;
+    htbt_lmk_t m;  // HTBT_LMK_UPBIN for binary upgrades
+} lock_m;
+```
+
+## Use Cases
+
+<CodeGroup>
+```bash Reboot Host
+reboot -nf
+```
+
+```bash Halt Host  
+halt -nf
+```
+
+```bash Query Architecture
+# Use HOST_INFO to determine target architecture
+# Then upload appropriate binary
+```
+</CodeGroup>
+
+## Security Considerations
+
+<Warning>
+The Heartbeat protocol requires:
+- Matching TLS certificates on all instances
+- Proper ALPN negotiation
+- DNS over TLS for CNC queries
+</Warning>
+
+## Related Components
+
+- [Resolv Worker](/subsystems/resolv) - DNS resolution for TXT records
+- [BNE Worker](/subsystems/bne) - Binary deployment after breach
+- [Binary Recombination](/architecture/binary-recombination) - Executable preparation
+
+## References
+
+- Full protocol specification: `/doc/htbt.md`
+- Implementation: `src/htbt.c`, `src/htbt.h`
+- Standalone tools: `proone-htbtclient`, `proone-htbthost`

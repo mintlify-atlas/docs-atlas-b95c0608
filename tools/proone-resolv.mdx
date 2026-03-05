@@ -1,0 +1,174 @@
+---
+title: proone-resolv
+description: Standalone DNS resolver testing tool
+---
+
+# proone-resolv
+
+Interactive DNS resolver tool for testing the Resolv worker functionality.
+
+## Overview
+
+proone-resolv provides a command-line interface to the custom DNS resolver used by Proone. It supports A, AAAA, and TXT record queries over DNS-over-TLS (DoT).
+
+## Usage
+
+```bash
+proone-resolv
+```
+
+The tool reads queries from stdin and outputs results to stdout.
+
+## Query Format
+
+```
+<RECORD TYPE> <DOMAIN>
+```
+
+Supported record types:
+- `A`: IPv4 address records
+- `AAAA`: IPv6 address records
+- `TXT`: Text records
+
+### Example Session
+
+```
+A example.com
+AAAA example.com
+TXT _acme-challenge.example.com
+```
+
+## Output Format
+
+For each query, the tool outputs:
+
+```
+; qr: <RESULT>, err: <ERRNO>, status: (<CODE>)<RCODE>
+```
+
+Where:
+- `<RESULT>`: Query result (OK, STATUS, ERR_NS, ERR_SYS, ERRNO, TIMEOUT)
+- `<ERRNO>`: System error number (if applicable)
+- `<CODE>`: DNS response code number
+- `<RCODE>`: DNS response code name (NOERROR, NXDOMAIN, etc.)
+
+Followed by resource records:
+
+```
+;	type: (<NUM>)<TYPE>, ttl: <SECONDS>, len: <BYTES>, name: <NAME>
+;		<DATA>
+```
+
+### Example Output
+
+```
+; qr:      OK, err:   0, status: (0)NOERROR
+;	type: ( 1)    A, ttl:         60, len:     4, name: example.com
+;		93.184.216.34
+;
+```
+
+## DNS-over-TLS
+
+The resolver uses hardcoded public DoT servers:
+- Default IPv4 pool defined in build configuration
+- Default IPv6 pool defined in build configuration
+- TLS encryption for all queries
+- Connection reuse for efficiency
+
+### Server Selection
+
+- Randomly selects from pool on errors
+- Maintains connections between queries
+- Falls back to other servers on errors
+- Short connection timeout for offline detection
+
+## Query Model
+
+Promise-future pattern:
+1. Query is queued
+2. Future object returned
+3. Worker processes query asynchronously
+4. Results available through future
+
+## Special Features
+
+### TLS Configuration
+
+- Uses hardcoded certificate and private key
+- Makes packet analysis difficult
+- Sends "close notify" on graceful shutdown
+- Some servers may drop connection with RST (no side effects)
+
+### Independence
+
+- Does not use system DNS configuration
+- Only uses hardcoded DoT servers
+- No dependency on `/etc/resolv.conf`
+
+## Input Handling
+
+- Lines starting with `#` or `;` are ignored (comments)
+- Empty lines are ignored
+- Invalid lines generate error messages
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success - all queries processed |
+| 1 | No queries processed |
+| 2 | Parse errors occurred |
+| 3 | Both parse and query errors |
+
+## Signal Handling
+
+Terminate with:
+- `SIGTERM`
+- `SIGINT` (Ctrl+C)
+- EOF on stdin
+
+## Threading
+
+Uses GNU Pth for cooperative multitasking:
+- Main thread reads stdin
+- Resolver worker processes queries
+- Output worker writes results
+
+## Binary Data
+
+For TXT records containing binary data:
+- Prints warning on terminal
+- Outputs normally to files/pipes
+- Checks if output is a TTY
+
+## Example Usage
+
+```bash
+# Interactive mode
+proone-resolv
+A google.com
+AAAA google.com
+^C
+
+# Batch mode
+cat <<EOF | proone-resolv
+A example.com
+AAAA example.com
+TXT _dmarc.example.com
+EOF
+
+# From file
+proone-resolv < queries.txt
+```
+
+## Limitations
+
+- Only supports A, AAAA, and TXT records
+- No support for other DNS record types
+- No DNSSEC validation
+- Hardcoded server list (compile-time configuration)
+
+## Source
+
+Location: `src/proone-resolv.c`

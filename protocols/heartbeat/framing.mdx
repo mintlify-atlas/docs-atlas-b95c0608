@@ -1,0 +1,329 @@
+---
+title: "Framing Protocol"
+description: "Detailed specification of Heartbeat protocol frames and sessions"
+---
+
+## Frame Overview
+
+The Heartbeat protocol uses a binary framing format where each message begins with a **Message Header Frame** followed by zero or one operation-specific frame.
+
+## Message Header Frame
+
+Every message starts with a 3-byte message header:
+
+```
+    0                   1                   2
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
+ 0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |I|             id              |      op       |
+ 3 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+### Fields
+
+| Field | Bits | Type | Description |
+|-------|------|------|-------------|
+| I | 1 | flag | Initiator flag - set if sent by session initiator |
+| id | 15 | uint | Message ID (0-32767) |
+| op | 8 | enum | Operation code |
+
+### Properties
+
+- **Type**: `prne_htbt_msg_head_t`
+- **Length**: 3 bytes (fixed)
+- **Functions**: `prne_htbt_init_msg_head()`, `prne_htbt_ser_msg_head()`, `prne_htbt_dser_msg_head()`
+
+### Operation Codes
+
+| OP Code | Value | Name | Next Frame | Description |
+|---------|-------|------|------------|-------------|
+| `NOOP` | 0x00 | No Operation | - | Keep-alive message |
+| `STATUS` | 0x01 | Status | Status | Result or error report |
+| `HOST_INFO` | 0x02 | Host Info | None/Hostinfo | Query instance information |
+| `HOVER` | 0x03 | Hand-over | Handover | Redirect to another server |
+| `SOLICIT` | 0x04 | Solicit | - | Request instructions |
+| `RUN_CMD` | 0x05 | Execute | Command | Run shell command |
+| `UP_BIN` | 0x06 | Binary Upgrade | Bin Meta | Replace instance binary |
+| `RUN_BIN` | 0x07 | Execute Binary | Bin Meta | Upload and run binary |
+| `STDIO` | 0x08 | STDIO | STDIO | Transfer I/O data |
+| `RCB` | 0x09 | Binary Recombination | RCB | Request recombined binary |
+
+## Status Frame
+
+Reports the result of operations or errors.
+
+```
+    0
+    0 1 2 3 4 5 6 7
+ 0 +-+-+-+-+-+-+-+-+
+   |     code      |
+   +-+-+-+-+-+-+-+-+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ 1 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                              err                              |
+ 5 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| code | uint8 | Status code |
+| err | int32 | Error value (errno or module-specific) |
+
+### Status Codes
+
+| Code | Value | Description |
+|------|-------|-------------|
+| `OK` | 0x00 | Operation successful |
+| `UNIMPL` | 0x01 | Functionality not implemented |
+| `PROTO_ERR` | 0x02 | Protocol error detected |
+| `ERRNO` | 0x03 | System error, see `err` field |
+| `SUB` | 0x04 | Module error, see `err` field |
+| `LIMIT` | 0x05 | Resource limit reached |
+
+**Properties**: 5 bytes fixed length, type `prne_htbt_status_t`
+
+## Hostinfo Frame
+
+Carries diagnostic and statistical data about a Proone instance.
+
+```
+      0                   1                   2                   3
+      0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                                                               |
+     +                          prog_ver (16 bytes)                  +
+     |                                                               |
+  16 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                                                               |
+     +                          boot_id (16 bytes)                   +
+     |                                                               |
+  32 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                                                               |
+     +                       instance_id (16 bytes)                  +
+     |                                                               |
+  48 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                                                               |
+     +                          org_id (16 bytes)                    +
+     |                                                               |
+  64 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                         parent_uptime                         |
+  68 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                         child_uptime                          |
+  72 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                          bne_cnt (64-bit)                     |
+  80 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                        infect_cnt (64-bit)                    |
+  88 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                           crash_cnt                           |
+  92 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                          parent_pid                           |
+  96 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |                           child_pid                           |
+ 100 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     |    hc_len     |     arch      |      os       |    bf_len     |
+ 104 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     | hc ... (variable) | bf ... (variable)
+     +-------------------
+```
+
+### Key Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| prog_ver | UUID | Proone version identifier |
+| boot_id | UUID | Host boot UUID (from `/proc/sys/kernel/random/boot_id`) |
+| instance_id | UUID | Generated on first launch |
+| org_id | UUID | Instance ID of infecting instance (origin) |
+| parent_uptime | uint32 | Parent process uptime in seconds |
+| child_uptime | uint32 | Child process uptime in seconds |
+| bne_cnt | uint64 | "Break and entry" count |
+| infect_cnt | uint64 | Successful infection count |
+| crash_cnt | uint32 | Child process crash count |
+| arch | uint8 | CPU architecture code |
+| os | uint8 | OS code |
+| hc | variable | Host credential data (username + password) |
+| bf | variable | Bitfield with instance flags |
+
+**Properties**: Variable length, 104-614 bytes, type `prne_htbt_host_info_t`
+
+### Instance Flags (Bitfield)
+
+| Flag | Bit | Description |
+|------|-----|-------------|
+| `BA` | 0 | Binary archive initialized |
+| `INIT_RUN` | 1 | First run on this host |
+| `WKR_RCN` | 2 | Recon worker running |
+| `WKR_RESOLV` | 3 | Resolv worker running |
+| `WKR_HTBT` | 4 | Heartbeat worker running |
+
+## Command Frame
+
+Represents arguments for `exec()` syscall.
+
+```
+     0                   1
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+  0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |   rsv   |D|     args_len      |
+  2 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |   args ...
+    +-+-+-
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| D | flag | Detach flag - spawn as daemon |
+| args_len | uint10 | Length of args in bytes (0-1023) |
+| args | variable | Null-terminated strings |
+
+**Properties**: Variable length, 2-1025 bytes, type `prne_htbt_cmd_t`
+
+### Detached Processes
+
+When the D flag is set, the process is spawned with:
+- STDIN returns EOF
+- STDOUT/STDERR cause EPIPE
+- Process is session leader
+- Parent is system reaper process
+
+## Binary Meta Frame
+
+Extends Command frame for binary uploads.
+
+```
+     0                   1                   2
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
+  0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                   alloc_len                   |
+  3 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |   rsv   |D|     args_len      |
+  5 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |  args ...
+    +-+-+-
+```
+
+### Additional Field
+
+| Field | Type | Description |
+|-------|------|-------------|
+| alloc_len | uint24 | Advisory preallocation size (0-16,777,215 bytes) |
+
+**Properties**: Variable length, 5-1028 bytes, type `prne_htbt_bin_meta_t`
+
+## STDIO Frame
+
+Transfers standard I/O or binary data.
+
+```
+    0                   1
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+ 0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |E|F|rsv|          len          |
+ 2 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  data ...
+   +-+-+-
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| E | flag | stderr flag (submissive→authoritative only) |
+| F | flag | Final frame flag (EOF/end of transfer) |
+| len | uint12 | Data length in bytes (0-4095) |
+| data | variable | Binary data |
+
+**Properties**: Variable length, 2+ bytes, type `prne_htbt_stdio_t`
+
+## Handover Frame
+
+Instructs instance to connect to another authoritative host.
+
+```
+     0                   1                   2                   3
+     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+  0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |                            addr_4                             |
+  4 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |            port_4             |          addr_6 ...           |
+  8 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+                               +
+    |                         addr_6 (16 bytes)                     |
+ 22 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    |            port_6             |
+ 24 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| addr_4 | uint32 | IPv4 address (network order) |
+| port_4 | uint16 | IPv4 port |
+| addr_6 | uint128 | IPv6 address (network order) |
+| port_6 | uint16 | IPv6 port |
+
+**Properties**: 24 bytes fixed, type `prne_htbt_hover_t`
+
+**Note**: Use `0.0.0.0` or `::` for unspecified addresses. IPv6 takes precedence when both are specified.
+
+## RCB Frame
+
+Requests binary recombination for a specific platform.
+
+```
+    0                   1                   2
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
+ 0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |C|S|    rsv    |      os       |     arch      |
+ 3 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| C | flag | Allow compatible architecture |
+| S | flag | Self-copy flag |
+| os | uint8 | OS code |
+| arch | uint8 | CPU architecture code |
+
+**Properties**: 3 bytes fixed, type `prne_htbt_rcb_t`
+
+## Architecture Codes
+
+| Code | Value | Description |
+|------|-------|-------------|
+| `I686` | 0x01 | Intel P6 (Pentium Pro) |
+| `X86_64` | 0x02 | AMD64 |
+| `ARMV4T` | 0x03 | ARM v4 w/ Thumb |
+| `ARMV7` | 0x04 | ARM v7 w/ Thumb-2 |
+| `AARCH64` | 0x05 | AArch64 |
+| `MIPS` | 0x06 | MIPS 1 big-endian |
+| `MPSL` | 0x07 | MIPS 1 little-endian |
+| `PPC` | 0x08 | PowerPC 1 |
+| `SH4` | 0x09 | SuperH 4 |
+| `M68K` | 0x0A | Motorola 68040 |
+| `ARC` | 0x0B | ARC little-endian |
+| `ARCEB` | 0x0C | ARC big-endian |
+
+## OS Codes
+
+| Code | Value | Description |
+|------|-------|-------------|
+| `LINUX` | 0x01 | Linux ABI (LSB) |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Protocol Overview" icon="book" href="/protocols/heartbeat/overview">
+    Back to protocol introduction
+  </Card>
+  <Card title="TXT REC CNC" icon="globe" href="/protocols/heartbeat/txt-rec-cnc">
+    DNS-based command mechanism
+  </Card>
+</CardGroup>

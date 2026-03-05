@@ -1,0 +1,343 @@
+---
+title: Resource Allocation
+description: Resource management patterns including transparent structures, opaque types, and ownership flags
+---
+
+## Overview
+
+Proone uses several resource allocation patterns to manage memory, file descriptors, and other resources consistently across the codebase. Understanding these patterns is essential for working with framework structures.
+
+## Transparent Structures
+
+Transparent structures have visible members and must be initialized and deinitialized using provided functions.
+
+### Initialization and Deinitialization
+
+```c
+prne_init_llist()
+prne_free_llist()
+```
+
+**Initialization functions:**
+- Set members to their default values
+- Prepare structures for deinitialization
+- Usually done by zeroing the entire structure (with exceptions where non-zero defaults are used)
+
+**Deinitialization functions:**
+- Act like "destructors" in other languages
+- Free any dynamically allocated members
+- Have no effect for structures without dynamic members
+
+### Critical Requirements
+
+<Warning>
+  All initialization and deinitialization functions **must** be used to ensure that members added in the future are properly initialized/freed.
+</Warning>
+
+**Guaranteed behavior:**
+- All functions take exactly one argument
+- Deinitialized structures are **not reusable**
+- Structures must be reinitialized after being deinitialized
+
+### Example Pattern
+
+```c
+// Initialize structure
+prne_llist_t list;
+prne_init_llist(&list);
+
+// Use structure
+prne_llist_append(&list, data);
+
+// Deinitialize (frees dynamic members)
+prne_free_llist(&list);
+
+// Must reinitialize before reuse
+prne_init_llist(&list);
+```
+
+## Opaque Types
+
+Opaque types are polymorphic objects (classes) that are dynamically allocated by "instantiation functions."
+
+### Instantiation Pattern
+
+```c
+prne_rnd_alloc_well512()
+prne_alloc_resolv()
+```
+
+**Characteristics:**
+- Internal structure is hidden from callers
+- Destructor functions provided upon successful instantiation
+- Underlying abstraction layer handles destructor invocation
+
+### Example Usage
+
+```c
+// Allocate opaque type
+prne_rnd_t *rnd = prne_rnd_alloc_well512();
+if (rnd == NULL) {
+  // Handle allocation failure
+}
+
+// Use object through interface
+prne_rnd_read(rnd, buffer, size);
+
+// Destructor called through abstraction layer
+prne_rnd_free(rnd);
+```
+
+## Dynamic Members
+
+Some types have dynamically allocated members with dedicated allocation functions.
+
+### Dynamic Member Allocation Functions
+
+```c
+prne_htbt_alloc_host_info()
+prne_alloc_iobuf()
+```
+
+**Characteristics:**
+- Allocate or reallocate dynamic members of structures
+- Can be freed by calling with zero size: `prne_alloc_iobuf(obj, 0)`
+- Automatically freed by deinitialization functions
+
+### Example Usage
+
+```c
+// Initialize structure
+prne_htbt_t htbt;
+prne_init_htbt(&htbt);
+
+// Allocate dynamic member
+if (!prne_htbt_alloc_host_info(&htbt, 1024)) {
+  // Handle allocation failure
+}
+
+// Resize dynamic member
+if (!prne_htbt_alloc_host_info(&htbt, 2048)) {
+  // Handle reallocation failure
+}
+
+// Free dynamic member explicitly
+prne_htbt_alloc_host_info(&htbt, 0);
+
+// Or let deinitialization handle it
+prne_free_htbt(&htbt);
+```
+
+## Ownership of Dynamic Resources
+
+Some structures include an `ownership` flag to allow sharing of large memory allocations between instances.
+
+### Ownership Flag Behavior
+
+**When ownership flag is set (`true`):**
+- Structure owns the dynamically allocated memory
+- Deinitialization function will free the dynamic members
+
+**When ownership flag is unset (`false`):**
+- Structure does not own the memory
+- Deinitialization function will **not** free the dynamic members
+- Allows multiple structures to share the same memory
+
+### Use Cases
+
+1. **Chaining structures** - Form a chain of structures sharing the same dynamic members
+2. **Static data** - Use data from `.bss` or `.data` sections as dynamic members without copying
+3. **Memory efficiency** - Share large buffers between instances without duplication
+
+### prne_own_realloc()
+
+Helper function to assume ownership of memory:
+
+```c
+bool prne_own_realloc(
+  void **p,
+  bool *ownership,
+  const size_t se,
+  size_t *old,
+  const size_t req);
+```
+
+**Behavior:**
+- If ownership is unset: allocates new memory and copies content
+- If ownership is set: equivalent to calling `realloc()`
+- Always sets ownership flag upon successful operation
+
+**Parameters:**
+- `p` - Pointer to the pointer holding the address
+- `ownership` - Pointer to the current ownership flag
+- `se` - Byte size of each element
+- `old` - Current number of elements
+- `req` - Number of elements requested
+
+**Returns:**
+- `true` on success
+- `false` on failure (errno set)
+
+**Implementation:** (util_rt.c:180-204)
+
+```c
+bool prne_own_realloc(
+  void **p,
+  bool *ownership,
+  const size_t se,
+  size_t *old,
+  const size_t req)
+{
+  void *ny = prne_realloc(
+    *ownership ? *p : NULL,
+    se,
+    req);
+  
+  if (req > 0 && ny == NULL) {
+    return false;
+  }
+  
+  if (!*ownership) {
+    memcpy(ny, *p, prne_op_min(*old, req) * se);
+  }
+  *p = ny;
+  *old = req;
+  *ownership = true;
+  
+  return true;
+}
+```
+
+### Example: Sharing Memory Between Instances
+
+```c
+typedef struct {
+  uint8_t *buffer;
+  size_t size;
+  bool ownership;
+} my_data_t;
+
+void init_my_data(my_data_t *d) {
+  d->buffer = NULL;
+  d->size = 0;
+  d->ownership = false;
+}
+
+void free_my_data(my_data_t *d) {
+  if (d->ownership) {
+    prne_free(d->buffer);
+  }
+  d->buffer = NULL;
+  d->size = 0;
+  d->ownership = false;
+}
+
+// Primary instance owns the memory
+my_data_t primary;
+init_my_data(&primary);
+primary.buffer = prne_malloc(1, 4096);
+primary.size = 4096;
+primary.ownership = true;
+
+// Secondary instance shares the memory
+my_data_t secondary;
+init_my_data(&secondary);
+secondary.buffer = primary.buffer;
+secondary.size = primary.size;
+secondary.ownership = false;  // Does not own
+
+// Both can read/write the buffer
+memcpy(primary.buffer, data, len);
+process(secondary.buffer, secondary.size);
+
+// Only primary frees the memory
+free_my_data(&secondary);  // No-op, doesn't free buffer
+free_my_data(&primary);     // Frees buffer
+```
+
+### Example: Using Static Data
+
+```c
+static const uint8_t default_config[] = { /* ... */ };
+
+my_data_t config;
+init_my_data(&config);
+config.buffer = (uint8_t*)default_config;  // Cast away const
+config.size = sizeof(default_config);
+config.ownership = false;  // Static data, don't free
+
+// Use config without copying
+load_config(config.buffer, config.size);
+
+// Safe cleanup (doesn't free static data)
+free_my_data(&config);
+```
+
+## Resource Allocation Hook
+
+Both `prne_free()` and `prne_close()` provide hooks for future framework-level resource debugging and file descriptor registry maintenance.
+
+### prne_close()
+
+Safe wrapper for `close()` that preserves errno:
+
+```c
+int prne_close(const int fd);
+```
+
+**Behavior:**
+- Returns 0 if fd is negative (no operation)
+- Calls `close()` and returns its value if fd is valid
+- Preserves errno when no operation is performed
+
+**Implementation:** (util_rt.c:39-44)
+
+```c
+int prne_close(const int fd) {
+  if (fd >= 0) {
+    return close(fd);
+  }
+  return 0;
+}
+```
+
+### prne_shutdown()
+
+Safe wrapper for `shutdown()` that checks fd validity:
+
+```c
+void prne_shutdown(const int fd, const int how);
+```
+
+**Implementation:** (util_rt.c:46-50)
+
+```c
+void prne_shutdown(const int fd, const int how) {
+  if (fd >= 0) {
+    shutdown(fd, how);
+  }
+}
+```
+
+## Resource Allocation Patterns Summary
+
+| Pattern | Initialization | Deinitialization | Reusable | Ownership |
+|---------|---------------|------------------|----------|----------|
+| **Transparent Structures** | `prne_init_*()` | `prne_free_*()` | No (must reinit) | N/A |
+| **Opaque Types** | `prne_alloc_*()` | `prne_*_free()` | No | N/A |
+| **Dynamic Members** | `prne_alloc_*()` | Automatic or explicit | Yes | Optional |
+
+## Best Practices
+
+1. **Always initialize** - Call init functions even if you plan to immediately set members
+2. **Always deinitialize** - Call free functions to ensure cleanup of future members
+3. **Never reuse without reinit** - Deinitialized structures must be reinitialized
+4. **Respect ownership** - Only set ownership = true if you allocated the memory
+5. **Document ownership transfers** - Clearly document when ownership changes hands
+6. **Use helpers** - Prefer `prne_own_realloc()` over manual ownership management
+7. **Check all allocations** - Dynamic member allocation can fail, always check return values
+
+## See Also
+
+- [Memory Management](/development/memory-management) - Framework allocation functions and patterns
+- [Developer Notes](/development/notes) - Additional implementation notes and debugging tips

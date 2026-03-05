@@ -1,0 +1,332 @@
+---
+title: Configuration Options
+description: Detailed reference for Proone build configuration flags and environment variables
+---
+
+## Overview
+
+Proone's build system provides several configuration options to customize the build for different deployment scenarios. These options control debugging, linking behavior, feature sets, and memory usage optimizations.
+
+## Configure Flags
+
+Configuration flags are passed to the `./configure` script to control build behavior.
+
+### --enable-debug
+
+Build with debug flags and enable verbose logging.
+
+```bash
+./configure --enable-debug
+```
+
+**Effect:**
+- Sets `PRNE_DEBUG=1` in the compiled code
+- Enables debug symbols for GDB debugging
+- Activates verbose logging at runtime
+- Disables compiler optimizations for easier debugging
+
+**Default:** `no` (disabled)
+
+**When to use:**
+- Development and testing
+- Debugging crashes or unexpected behavior
+- Analyzing execution flow with verbose logs
+
+**Source:** ~/workspace/source/configure.ac:15-26
+
+### --enable-static
+
+Build statically linked executables.
+
+```bash
+./configure --enable-static
+```
+
+**Effect:**
+- Links all libraries statically into the executable
+- Creates standalone binaries with no runtime dependencies
+- Increases executable size significantly
+- Eliminates dependency on shared libraries on target systems
+
+**Default:** `no` (disabled, uses dynamic linking)
+
+**When to use:**
+- Targeting embedded devices without full library installations
+- Maximum portability across different Linux distributions
+- Production deployments where library versions may vary
+- Cross-compilation for IoT devices
+
+**Important:** Static builds are **essential** for the production release workflow as embedded targets often lack the required shared libraries.
+
+**Source:** ~/workspace/source/configure.ac:28-37
+
+### --enable-mttools
+
+Build maintenance tools for CNC operations.
+
+```bash
+./configure --enable-mttools
+```
+
+**Effect:**
+- Enables compilation of maintenance and administration tools
+- Requires additional dependencies (libyaml, mariadb-connector-c)
+- Requires mbedtls compiled with threading support (`MBEDTLS_THREADING_C`)
+- Builds:
+  - `proone-hostinfod` - Authoritative heartbeat server
+  - `proone-htbtclient` - Instance maintenance client
+  - Database-backed CNC infrastructure tools
+
+**Default:** `no` (disabled)
+
+**When to use:**
+- Building CNC server infrastructure
+- Setting up authoritative heartbeat hosts
+- Developing or testing heartbeat protocol implementations
+
+**Additional Requirements:**
+```bash
+# Install additional dependencies
+sudo apt-get install libyaml-dev libmariadb-dev
+
+# mbedtls must be compiled with threading
+# Check mbedtls config.h has: #define MBEDTLS_THREADING_C
+```
+
+**Source:** ~/workspace/source/configure.ac:39-140
+
+### --enable-minmem
+
+Use only the minimum amount of memory required to function.
+
+```bash
+./configure --enable-minmem
+```
+
+**Effect:**
+- Sets `PRNE_USE_MIN_MEM=1` in the compiled code
+- Reduces buffer sizes and memory allocations
+- Optimizes for extremely resource-constrained environments
+- May impact performance in favor of lower memory footprint
+
+**Default:** `no` (disabled)
+
+**When to use:**
+- Targeting very low-memory embedded devices (< 32MB RAM)
+- Devices already running memory-intensive services
+- Situations where staying under memory limits is critical
+
+**Trade-offs:**
+- Reduced throughput for network operations
+- Slower binary recombination process
+- May increase susceptibility to ENOMEM failures
+
+**Source:** ~/workspace/source/configure.ac:50-63
+
+## Environment Variables
+
+These variables can be set before running `./configure` to customize the build.
+
+### PRNE_VERBOSE
+
+Set the compile-time verbose logging level (requires `--enable-debug`).
+
+```bash
+PRNE_VERBOSE=3 ./configure --enable-debug
+```
+
+**Values:**
+- `0` - Minimal logging (errors only)
+- `1` - Warnings and errors
+- `2` - Info, warnings, and errors (default)
+- `3` - Debug, info, warnings, and errors
+- `4+` - Trace-level verbose logging
+
+**Default:** `2`
+
+**Note:** Only effective when `--enable-debug` is enabled. Higher values produce more verbose output, useful for detailed execution tracing.
+
+**Source:** ~/workspace/source/configure.ac:65-69
+
+### BIN_ALIGNMENT
+
+Set the binary alignment size for data structures.
+
+```bash
+BIN_ALIGNMENT=16 ./configure
+```
+
+**Values:**
+- Must be a power of 2 (typically 4, 8, 16, or 32)
+- Affects memory alignment of binary archive structures
+- May impact performance on some architectures
+
+**Default:** `8` bytes
+
+**When to modify:**
+- Targeting architectures with specific alignment requirements
+- Performance tuning for cache line optimization
+
+**Source:** ~/workspace/source/configure.ac:6, 70-72
+
+### CFLAGS / CXXFLAGS
+
+Custom compiler flags.
+
+```bash
+CFLAGS="-O3 -march=native" ./configure
+```
+
+**Default:** Empty (configure sets appropriate defaults)
+
+**Common use cases:**
+```bash
+# Maximum optimization for native CPU
+CFLAGS="-O3 -march=native" ./configure
+
+# Size optimization for embedded targets
+CFLAGS="-Os -ffunction-sections -fdata-sections" ./configure
+
+# Add security hardening
+CFLAGS="-fstack-protector-strong -D_FORTIFY_SOURCE=2" ./configure
+```
+
+**Source:** ~/workspace/source/configure.ac:3-4
+
+### LDFLAGS / CPPFLAGS
+
+Linker and preprocessor flags.
+
+```bash
+# Link against libraries in custom location
+LDFLAGS="-L/opt/custom/lib" CPPFLAGS="-I/opt/custom/include" ./configure
+
+# Strip symbols at link time for smaller binaries
+LDFLAGS="-Wl,--gc-sections -Wl,--strip-all" ./configure
+```
+
+## Configuration Examples
+
+### Development Build
+
+Full debugging with verbose output:
+
+```bash
+PRNE_VERBOSE=3 ./configure \
+  --enable-debug \
+  --enable-mttools
+```
+
+### Embedded Device Build
+
+Statically linked with minimal memory footprint:
+
+```bash
+CFLAGS="-Os" ./configure \
+  --enable-static \
+  --enable-minmem
+```
+
+### Production Release Build
+
+Optimized, static, no debug:
+
+```bash
+CFLAGS="-O2 -ffunction-sections -fdata-sections" \
+LDFLAGS="-Wl,--gc-sections" \
+./configure --enable-static
+```
+
+### CNC Server Build
+
+Maintenance tools with debugging:
+
+```bash
+./configure \
+  --enable-debug \
+  --enable-mttools
+```
+
+### Cross-Compilation Example
+
+For ARM embedded device:
+
+```bash
+./configure \
+  --host=arm-linux-gnueabi \
+  --enable-static \
+  --enable-minmem \
+  CFLAGS="-Os -march=armv5te"
+```
+
+See [Cross-Compilation](/build/cross-compilation) for detailed cross-compilation workflows.
+
+## Build Entropy
+
+Proone automatically generates build-time entropy during configuration:
+
+```c
+PRNE_BUILD_ENTROPY - 16 random bytes from /dev/urandom
+```
+
+This entropy is baked into the executable to provide unique build signatures and is used for runtime randomization.
+
+**Source:** ~/workspace/source/configure.ac:73-77
+
+## Library Detection
+
+The configure script automatically detects required libraries. If a library is missing, configuration fails with an error message:
+
+```
+checking for pthread_create in -lpthread... no
+configure: error: pthread not found
+```
+
+**Libraries checked:**
+1. pthread (`pthread_create`)
+2. rt (`shm_open`)
+3. zlib (`zlibVersion`)
+4. mbedcrypto (`mbedtls_cipher_setup`)
+5. mbedx509 (`mbedtls_x509_crt_parse`)
+6. mbedtls (`mbedtls_ssl_init`)
+7. libssh2 (`libssh2_init`)
+8. pthsem (`pth_init`)
+
+**With --enable-mttools:**
+9. libyaml (`yaml_parser_initialize`)
+10. mariadb (`mysql_init`)
+11. mbedtls threading support check
+
+**Source:** ~/workspace/source/configure.ac:79-140
+
+## Generated Files
+
+Configuration generates the following files:
+
+- `config.status` - Records the configuration command
+- `config.log` - Detailed log of configuration tests
+- `Makefile` - Main build file
+- `src/Makefile` - Source directory build file
+- `src/config_gen.h` - Header with configuration macros
+
+**Source:** ~/workspace/source/configure.ac:147-148
+
+## Viewing Current Configuration
+
+After running configure, review the configuration:
+
+```bash
+# View all configured options
+./config.status --config
+
+# View generated configuration header
+cat src/config_gen.h
+
+# View full configuration details
+head -100 config.log
+```
+
+## Next Steps
+
+- Return to [Building Proone](/build/building) for the complete build process
+- See [Cross-Compilation](/build/cross-compilation) for multi-architecture builds

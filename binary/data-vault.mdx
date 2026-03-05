@@ -1,0 +1,188 @@
+---
+title: Data Vault
+description: DVault - masked binary data storage for sensitive configuration and large static data
+---
+
+## Overview
+
+The **Data Vault** (DVault) is a binary block that contains large and sensitive data necessary for Proone's operation. DVault serves two primary purposes:
+
+1. **Reduce executable size** - By consolidating large data into a custom section rather than duplicating it in each architecture's `.data` section
+2. **Mask sensitive data** - Protect credentials and configuration from simple inspection tools like `strings` or core dumps
+
+DVault is loaded during initialization and remains in memory **masked**. Data is only unmasked when actively needed, then immediately re-masked.
+
+## Structure
+
+The DVault binary block has a specific layout:
+
+```
+┌─────────────────────────────┐
+│  256-byte XOR mask key      │  Offset: 0
+├─────────────────────────────┤
+│  Entry offset table         │  Offset: 256
+│  (2 bytes × NB_PRNE_DATA_KEY)│  (big-endian uint16_t array)
+├─────────────────────────────┤
+│  Entry 0 data               │
+│  ┌─────────────────────┐    │
+│  │ salt (1 byte)       │    │
+│  │ type (1 byte)       │    │  Masked with XOR
+│  │ length (2 bytes BE) │    │
+│  │ data (variable)     │    │
+│  └─────────────────────┘    │
+├─────────────────────────────┤
+│  Entry 1 data               │
+│  ...                        │
+└─────────────────────────────┘
+```
+
+### Data Types
+
+DVault supports two data types (defined in `src/dvault.h:41-49`):
+
+- `PRNE_DATA_TYPE_CSTR` - Null-terminated C string (UTF-8 encoded)
+- `PRNE_DATA_TYPE_BIN` - Binary data
+
+## Masking Mechanism
+
+DVault uses a simple but effective XOR-based masking scheme:
+
+### Mask Generation
+
+A **256-byte random array** is generated at compile time and stored at the beginning of the DVault block. This mask has high entropy, making compression ineffective.
+
+### Per-Entry Masking
+
+Each entry has its own **salt byte** that offsets into the mask array:
+
+```c
+// From src/dvault.c:83-94
+void prne_dvault_invert_mem (
+    const size_t size,
+    void *m,
+    const uint8_t salt,
+    const size_t salt_ofs,
+    const uint8_t *mask)
+{
+    size_t i;
+
+    for (i = 0; i < size; i += 1) {
+        ((uint8_t*)m)[i] ^= mask[(i + salt_ofs + (size_t)salt) % 256];
+    }
+}
+```
+
+The XOR operation is its own inverse: applying it twice returns the original data.
+
+### Masking Process
+
+1. Generate random salt byte for this entry
+2. Build entry: `[salt][type][length][data]`
+3. XOR bytes 1-N (everything except salt) with mask using salt offset
+4. Result has high entropy and resists compression
+
+## API Usage
+
+### Initialization
+
+```c
+// From src/dvault.c:158-173
+void prne_init_dvault (const void *m) {
+    m_data = (uint8_t*)m;
+    m_mask = (uint8_t*)m + 0;
+    m_offsets = (uint16_t*)((uint8_t*)m + 256);
+
+    // Unmask the offset table
+    prne_dvault_invert_mem(NB_PRNE_DATA_KEY * 2, m_offsets, 0, 0, m_mask);
+    
+    // Convert offsets from big-endian
+    for (prne_data_key_t i = 0; i < NB_PRNE_DATA_KEY; i += 1) {
+        m_offsets[i] = prne_be16toh(m_offsets[i]);
+    }
+}
+```
+
+### Retrieving Data
+
+```c
+// Get a C string (from src/dvault.c:205-215)
+const char *prne_dvault_get_cstr (const prne_data_key_t key, size_t *len) {
+    const char *ret = (const char*)dvault_get_bin(
+        key,
+        PRNE_DATA_TYPE_CSTR,
+        len);
+
+    if (len != NULL) {
+        *len -= 1;  // Exclude null terminator from length
+    }
+    return ret;
+}
+
+// Get binary data
+const uint8_t *prne_dvault_get_bin (const prne_data_key_t key, size_t *len);
+```
+
+### Security: Immediate Reset
+
+**Critical**: Always call `prne_dvault_reset()` immediately after using sensitive data:
+
+```c
+// From src/dvault.c:221-227
+void prne_dvault_reset (void) {
+    if (m_unmasked != NULL) {
+        // Re-mask the unmasked entry
+        prne_dvault_invert_mem(m_unmasked_size, m_unmasked, m_salt, 0, m_mask);
+        m_unmasked = NULL;
+        m_unmasked_size = 0;
+    }
+}
+```
+
+This ensures sensitive data like credentials exists unmasked in memory only during active use.
+
+## Entry Format
+
+Each DVault entry follows this wire format:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | Salt | Random offset for mask |
+| 1 | 1 | Type | `PRNE_DATA_TYPE_CSTR` or `PRNE_DATA_TYPE_BIN` |
+| 2-3 | 2 | Length | Big-endian uint16, data length in bytes |
+| 4+ | N | Data | The actual data (N = length) |
+
+**Maximum entry size**: 65,535 bytes (limited by 16-bit length field)
+
+## Design Trade-offs
+
+### Advantages
+
+- **Size optimization**: Single copy of large data across all architectures
+- **Memory protection**: Sensitive data masked except during use
+- **Simple implementation**: XOR masking has minimal CPU overhead
+- **Analysis resistance**: High entropy prevents pattern recognition
+
+### Limitations
+
+- **No compression**: XOR masking creates high-entropy data that doesn't compress
+- **Size limit**: 64KB maximum per entry due to 16-bit length field
+- **Not cryptographically secure**: XOR with known mask is trivially reversible if mask is found
+
+<Note>
+  DVault prioritizes **obfuscation** over cryptographic security. The goal is to resist casual inspection (strings, core dumps), not determined reverse engineering.
+</Note>
+
+## Build Tools
+
+DVault binaries are generated using `proone-mkdvault` during the build process:
+
+```bash
+# Generates src/dvault.bin from configuration
+proone-mkdvault -o dvault.bin config.txt
+```
+
+## Source Files
+
+- `src/dvault.h:1` - Header with API definitions and data types
+- `src/dvault.c:1` - Implementation of masking and retrieval functions
+- `src/proone-mkdvault.c` - Build tool for generating DVault binaries

@@ -1,122 +1,138 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Proone",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#642c2c",
+    "light": "#b29898",
+    "dark": "#d3c5c5"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "/favicon.png",
+  "logo": {
+    "light": "/logo.png",
+    "dark": "/logo.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/dxdxdt/proone"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/dxdxdt/proone"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Overview",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "foreword",
+              "security-notice"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Architecture",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "architecture/overview",
+              "architecture/subsystems",
+              "architecture/design-decisions"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Core Subsystems",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "subsystems/heartbeat",
+              "subsystems/recon",
+              "subsystems/bne",
+              "subsystems/resolv"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Binary System",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "binary/data-vault",
+              "binary/binary-archive",
+              "binary/recombination"
+            ]
+          },
+          {
+            "group": "Build & Deploy",
+            "pages": [
+              "build/building",
+              "build/configuration",
+              "build/cross-compilation"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Tools",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Main Executables",
             "pages": [
-              "api-reference/introduction"
+              "tools/proone",
+              "tools/proone-bne",
+              "tools/proone-hostinfod",
+              "tools/proone-htbtclient"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Utilities",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "tools/proone-recon",
+              "tools/proone-resolv",
+              "tools/proone-pack",
+              "tools/proone-mkcdict",
+              "tools/proone-mkdvault"
+            ]
+          },
+          {
+            "group": "Testing",
+            "pages": [
+              "tools/test-suite"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Protocols",
+        "groups": [
+          {
+            "group": "Heartbeat Protocol",
+            "pages": [
+              "protocols/heartbeat/overview",
+              "protocols/heartbeat/framing",
+              "protocols/heartbeat/txt-rec-cnc"
+            ]
+          },
+          {
+            "group": "Data Formats",
+            "pages": [
+              "protocols/data-formats"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Development",
+        "groups": [
+          {
+            "group": "Implementation",
+            "pages": [
+              "development/memory-management",
+              "development/resource-allocation",
+              "development/notes"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

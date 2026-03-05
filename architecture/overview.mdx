@@ -1,0 +1,150 @@
+---
+title: Architecture Overview
+description: Understanding Proone's system architecture and four main subsystems
+---
+
+Proone is a decentralized Linux worm designed with a modular architecture consisting of four main subsystems that work together to discover, compromise, and control vulnerable IoT devices.
+
+## System Architecture
+
+The architecture is built around autonomous workers that operate cooperatively using the GNU Pth threading library, allowing Proone to run efficiently on resource-constrained embedded devices with a single logical thread.
+
+<CardGroup cols={2}>
+  <Card title="Heartbeat" icon="heartbeat" href="#heartbeat-subsystem">
+    Backdoor and C&C mechanism for infected devices
+  </Card>
+  <Card title="Recon" icon="radar" href="#recon-subsystem">
+    Network discovery for IPv4 and IPv6 hosts
+  </Card>
+  <Card title="BNE" icon="door-open" href="#bne-subsystem">
+    Break and Enter worker pool for exploitation
+  </Card>
+  <Card title="Resolv" icon="dns" href="#resolv-subsystem">
+    DNS resolver for TXT record C&C
+  </Card>
+</CardGroup>
+
+## Four Main Subsystems
+
+### Heartbeat Subsystem
+
+The **Heartbeat** subsystem provides command and control (C&C) capabilities and serves as a maintenance backdoor on infected devices. It implements a point-to-point or broadcast framing protocol that operates over TCP/IP with TLS encryption.
+
+**Key Features:**
+- Two-way TLS certificate verification
+- ALPN (Application-Layer Protocol Negotiation) checking
+- DNS TXT record-based C&C
+- Local backdoor port for M2M (machine-to-machine) communication
+
+<Note>
+Proone does not include built-in DDoS attack features. Additional functionality can be added by patching and upgrading instances or deploying separate programs via the Heartbeat subsystem.
+</Note>
+
+### Recon Subsystem
+
+The **Recon (RCN)** worker discovers vulnerable nodes on both the internet and link-local networks. It uses raw sockets to send crafted TCP SYN packets with special signatures to randomly generated IP addresses.
+
+**Key Features:**
+- IPv4 and IPv6 host discovery
+- Target and blacklist network configuration
+- Signature-based packet recognition
+- ICMPv6-based IPv6 node discovery using multicast
+- One-second cycle timeout for rapid scanning
+
+**IPv6 Discovery Method:**
+For IPv6, Recon multicasts ICMPv6 ECHO packets with a bogus DSTOPT (0x9e) to the link-local network. Compliant IPv6 nodes respond with ICMPv6 type 4, code 2 errors, allowing the worker to identify active hosts.
+
+### BNE Subsystem
+
+The **Break and Enter (BNE)** worker pool performs exploitation of discovered hosts using various attack vectors:
+
+**Attack Vectors:**
+- Credential dictionary brute force ("combo list")
+- SSH authentication attacks
+- Local backdoor connections (for M2M operations)
+- Extensible interface for zero-day exploits
+
+**M2M Operations:**
+When the Heartbeat vector is enabled, BNE workers first attempt TLS connections to the target's Local Backdoor port. Successful connections (verified via 2-way certificate and ALPN) indicate the target is already running Proone, enabling binary version comparison and upgrades through binary recombination.
+
+<Note>
+BNE workers operate as tasks rather than services—they exit after completing their operation (successful compromise or exhausting all vectors).
+</Note>
+
+**Worker Pool Management:**
+- Maximum 128 concurrent BNE workers (`PROONE_BNE_MAX_CNT`)
+- Lowest priority to prevent starvation of vital workers
+- Spawned on-demand when Recon discovers new targets
+- Graceful degradation on memory-constrained systems
+
+### Resolv Subsystem
+
+The **Resolv** worker is a custom DNS resolver designed specifically for Proone's C&C needs, particularly TXT record-based commands.
+
+**Key Features:**
+- DNS over TLS (DoT) using hardcoded public nameservers
+- Promise-future query model with Pth integration
+- Connection pooling for persistent nameserver connections
+- TXT, A, and AAAA record resolution
+- Automatic failover across multiple nameservers
+- No dependency on system DNS configuration
+
+**Connection Management:**
+TCP connections to nameservers are kept open after query processing. During heavy TXT record streams (e.g., Heartbeat processing), the same nameserver is reused for efficiency. On errors or connection drops, another hardcoded nameserver is randomly selected from the pool.
+
+## Subsystem Interaction Flow
+
+<Steps>
+  <Step title="Discovery">
+    The **Recon** worker continuously scans networks, sending crafted packets to discover hosts with open ports on target networks
+  </Step>
+  
+  <Step title="Exploitation">
+    When Recon finds an open port, it triggers a **BNE** worker instance to attempt break-in using available attack vectors
+  </Step>
+  
+  <Step title="Binary Transfer">
+    Upon successful compromise, BNE performs binary recombination to prepare the correct executable for the target platform
+  </Step>
+  
+  <Step title="Infection">
+    The new Proone instance starts on the target, initializing its own Heartbeat, Recon, BNE, and Resolv workers
+  </Step>
+  
+  <Step title="C&C Communication">
+    The **Heartbeat** subsystem uses **Resolv** to query DNS TXT records for commands and maintain connectivity with the botnet operator
+  </Step>
+</Steps>
+
+## Cooperative Multitasking
+
+Proone uses **GNU Pth** (Pthsem library) for cooperative multitasking, restricting execution to a single logical thread. This design choice reflects the "run lean" philosophy:
+
+- Minimal CPU usage on resource-scarce embedded devices
+- Most vulnerable IoT devices are single-core systems
+- Strategy prioritizes infecting many low-powered devices over fewer high-performance systems
+- Workers coordinate through Pth scheduling primitives
+
+## Fault Tolerance
+
+Proone's compartmentalized design provides resilience against syscall failures, particularly `ENOMEM` errors on memory-constrained systems:
+
+- Can initialize "half-complete" with subset of workers running
+- Example: Instance without Recon can still respond to C&C and serve backdoor connections
+- Example: Instance without Heartbeat can still infect other devices on the network
+- No retry attempts—assumes resources remain scarce
+
+<Warning>
+Proone does not reattempt to start workers that fail during initialization. The assumption is that if a resource claim fails, the system is at capacity and retrying would be futile.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Subsystem Details" icon="gears" href="/architecture/subsystems">
+    Deep dive into each worker's implementation
+  </Card>
+  <Card title="Design Decisions" icon="compass-drafting" href="/architecture/design-decisions">
+    Rationale behind key architectural choices
+  </Card>
+</CardGroup>

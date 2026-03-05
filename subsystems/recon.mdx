@@ -1,0 +1,345 @@
+---
+title: 'Recon Subsystem'
+description: 'Network reconnaissance and host discovery worker'
+---
+
+The **Recon (RCN)** subsystem is responsible for discovering nodes on both the internet and link-local networks. It sends crafted SYN packets to randomly generated IP addresses and listens for responses.
+
+## Overview
+
+The Recon worker discovers potential targets by:
+
+1. Sending fabricated TCP SYN packets to random IPs
+2. Using special signatures to identify responses
+3. Discovering IPv6 nodes using ICMPv6 probes
+4. Filtering addresses against blacklists
+
+## Architecture
+
+```c src/recon.c
+struct prne_recon {
+    uint8_t buf[1504];  // MTU-aligned buffer
+    prne_recon_param_t param;
+    pth_mutex_t lock;
+    pth_cond_t cond;
+    prne_rnd_t rnd;
+    struct {
+        prne_llist_t list;
+        prne_llist_entry_t *ptr;
+    } v4_ii;  // IPv4 interface info
+    struct {
+        rcn_v6ifaceinfo_t *arr;
+        size_t cnt;
+    } v6_ii;  // IPv6 interface info
+    int fd[2][2];  // [IPv4/IPv6][send/recv]
+    // ...
+};
+```
+
+### Socket Configuration
+
+The worker creates **4 raw sockets** on IPv6-capable hosts:
+
+```c src/recon.c
+#define RCN_IDX_IPV4    0
+#define RCN_IDX_IPV6    1
+#define RCN_NB_FD       2
+
+static void rcn_create_rsck(
+    const int af,
+    const int pp,
+    int *fd)
+{
+    fd[0] = socket(AF_PACKET, SOCK_DGRAM, pp);  // Receive
+    fd[1] = socket(af, SOCK_RAW, IPPROTO_RAW);  // Send
+}
+```
+
+<Info>
+Mirai uses only one socket for sending and receiving. Proone uses 4 due to Linux kernel inconsistencies with the `IP_HDRINCL` flag for IPv6.
+</Info>
+
+## Target Configuration
+
+### Network Lists
+
+The worker accepts:
+
+- **Target networks**: Where to scan
+- **Blacklist networks**: What to avoid
+
+```c
+// Sample configuration
+PRNE_RCN_T_IPV4   = "0.0.0.0/0"     // All IPv4
+PRNE_RCN_BL_IPV4  = "127.0.0.0/8"  // Loopback
+PRNE_RCN_T_IPV6   = "::/0"         // All IPv6
+PRNE_RCN_BL_IPV6  = "::1/128"      // Loopback
+```
+
+### Port Selection
+
+```c src/recon.c
+static void rcn_main_do_syn(prne_recon_t *ctx) {
+    uint8_t src[16], dst[16];
+    int snd_flags = 0;
+    
+    // Generate random address
+    ret = rcn_main_gen_addr(ctx, src, dst, &snd_flags);
+    if (ret == PRNE_IPV_NONE || rcn_main_chk_blist(ctx, ret, dst)) {
+        return;
+    }
+    
+    // Send SYN to random port from configured list
+    rcn_main_send_syn(ctx, ret, src, dst, 0, snd_flags);
+}
+```
+
+## IPv4 Discovery
+
+### SYN Packet Generation
+
+```c src/recon.c
+static bool rcn_main_send_syn(
+    prne_recon_t *ctx,
+    const prne_ipv_t ipv,
+    const uint8_t *src,
+    const uint8_t *dst,
+    const uint32_t dst_scope,
+    const int snd_flags)
+{
+    struct tcphdr th;
+    prne_iphdr4_t *ih4;
+    
+    // Set TCP header
+    th.source = htons(ctx->s_port);
+    th.dest = htons(d_port);
+    th.doff = 5;
+    th.syn = 1;
+    
+    // Generate signature in sequence number
+    th.seq = prne_recmb_msb32(
+        dst[0], dst[1], dst[2], dst[3]) ^ ctx->seq_mask;
+    th.seq = htonl(th.seq);
+    
+    // Calculate checksum
+    th.check = htons(prne_calc_tcp_chksum4(
+        ih4,
+        (const uint8_t*)&th,
+        sizeof(th),
+        NULL,
+        0));
+    // ...
+}
+```
+
+### Signature Recognition
+
+The worker recognizes SYN+ACK responses by verifying the signature:
+
+```c src/recon.c
+static bool rcn_main_recv_4(prne_recon_t *ctx) {
+    prne_iphdr4_t ih;
+    struct tcphdr th;
+    uint32_t exp_ack;
+    
+    // Parse received packet
+    prne_dser_iphdr4(ctx->buf, &ih);
+    memcpy(&th, ctx->buf + ih.ihl * 4, sizeof(struct tcphdr));
+    
+    // Verify signature
+    exp_ack = prne_recmb_msb32(
+        ih.saddr[0], ih.saddr[1], 
+        ih.saddr[2], ih.saddr[3]) ^ ctx->seq_mask;
+    exp_ack += 1;
+    
+    if (ntohs(th.dest) == ctx->s_port &&
+        ntohl(th.ack_seq) == exp_ack &&
+        th.ack && th.syn && !th.rst && !th.fin)
+    {
+        // Valid response - notify callback
+        ctx->param.evt_cb(ctx->param.cb_ctx, &ep);
+    }
+}
+```
+
+<Info>
+The signature uses the destination IP XORed with a random mask. This allows the worker to distinguish its own packets from other traffic without maintaining connection state.
+</Info>
+
+## IPv6 Discovery
+
+IPv6 discovery uses a different approach due to the massive address space:
+
+### Bogus ICMPv6 Probes
+
+```c src/recon.c
+static void rcn_main_send_v6probe_from(
+    prne_recon_t *ctx,
+    const rcn_v6ifaceinfo_t *from)
+{
+    prne_iphdr6_t iph;
+    struct icmp6_hdr icmph;
+    
+    // Set destination to link-local multicast
+    memcpy(iph.daddr, RCN_IPV6_DST_LL, 16);  // ff02::1
+    
+    // Add bogus DSTOPT (0x9e - experimental)
+    iph.next_hdr = IPPROTO_DSTOPTS;
+    p[0] = IPPROTO_ICMPV6;
+    p[1] = 0;
+    p[2] = 0x9e;  // Bogus option
+    p[3] = 4;
+    prne_rnd(&ctx->rnd, p + 4, 4);
+    
+    // Send ECHO request
+    icmph.icmp6_type = ICMP6_ECHO_REQUEST;
+    // ...
+}
+```
+
+### Response Processing
+
+```c src/recon.c
+static bool rcn_main_recv_6(prne_recon_t *ctx) {
+    struct icmp6_hdr *icmph;
+    
+    switch (icmph->icmp6_type) {
+    case ICMP6_ECHO_REPLY:
+        // Bad implementation processed it anyway
+        rcn_main_recv_6_icmp_tail(ctx, &ih);
+        break;
+    case ICMP6_PARAM_PROB:
+        pptr = ntohl(icmph->icmp6_pptr);
+        if (icmph->icmp6_code == ICMP6_PARAMPROB_OPTION &&
+            p[pptr] == 0x9e)
+        {
+            // Correct ICMPv6 4/2 response
+            rcn_main_send_syn(ctx, PRNE_IPV_6, ...);
+        }
+        break;
+    }
+}
+```
+
+<Warning>
+IPv6 nodes are **required by spec** to send ICMPv6 type 4 code 2 for unrecognized DSTOPT. They must **not** process the ECHO request. This behavior enables discovery without scanning the massive IPv6 space.
+</Warning>
+
+## Timing and Rate Control
+
+```c src/recon.c
+// Cycle timing
+#define RCN_SYN_TICK_MIN 800   // 800ms
+#define RCN_SYN_TICK_VAR 400   // 400ms
+
+// Packets per tick
+static const uint_fast32_t RCN_SYN_PPT_MIN = 60;
+static const uint_fast32_t RCN_SYN_PPT_VAR = 100;
+
+// IPv6 probe count
+#define RCN_IPV6_PROBE_CNT 4
+```
+
+Each cycle:
+1. Duration: 800-1200ms (randomized)
+2. Sends 60-160 SYN packets
+3. Sends up to 4 IPv6 probes
+4. Processes incoming responses
+
+## Link-Local Discovery
+
+### Interface Enumeration
+
+```c src/recon.c
+static bool rcn_main_do_ifaddrs(prne_recon_t *ctx) {
+    struct ifaddrs *ia;
+    
+    if (getifaddrs(&ia) != 0) {
+        goto END;
+    }
+    
+    // Process IPv4 interfaces
+    rcn_main_do_ifaddr_4(ctx, ia, &v4list);
+    
+    // Process IPv6 interfaces  
+    rcn_main_do_ifaddr_6(ctx, ia, &v6arr, &v6cnt);
+    
+    // Update internal state
+    ctx->v4_ii.list = v4list;
+    ctx->v6_ii.arr = v6arr;
+    // ...
+}
+```
+
+### Subnet Scanning
+
+For link-local networks, addresses are generated within the subnet:
+
+```c src/recon.c
+static bool rcn_main_genaddr_ii_4(
+    prne_recon_t *ctx,
+    uint8_t *src,
+    uint8_t *dst)
+{
+    rcn_v4ifaceinfo_t *info = ctx->v4_ii.ptr->element;
+    
+    // Generate random host address
+    memcpy(src, info->addr, 4);
+    prne_rnd(&ctx->rnd, dst, 4);
+    prne_bitop_and(dst, info->hostmask, dst, 4);
+    prne_bitop_or(dst, info->network, dst, 4);
+    
+    // Don't scan own address
+    return memcmp(src, dst, 4) != 0;
+}
+```
+
+## Kernel RST Packets
+
+<Warning>
+Crafted TCP packets are **not managed by the kernel**. When the kernel receives SYN+ACK packets for connections it doesn't recognize, it automatically sends RST packets. This is normal behavior.
+</Warning>
+
+## Configuration Example
+
+```c
+prne_recon_param_t param;
+
+prne_init_recon_param(&param);
+param.evt_cb = my_callback;
+param.cb_ctx = my_context;
+
+// Configure targets
+prne_alloc_recon_param(&param, 0, 2, 5);
+// Target all IPv4
+prne_parse_network("0.0.0.0/0", &param.target.arr[0]);
+// Target all IPv6  
+prne_parse_network("::/0", &param.target.arr[1]);
+
+// Configure ports
+param.ports.arr[0] = 22;   // SSH
+param.ports.arr[1] = 23;   // Telnet
+param.ports.arr[2] = 80;   // HTTP
+param.ports.arr[3] = 2323; // Alt Telnet
+param.ports.arr[4] = 8080; // Alt HTTP
+```
+
+## Performance Characteristics
+
+- **Cycle duration**: ~1 second
+- **SYN packets/cycle**: 60-160
+- **IPv6 probes/cycle**: Up to 4
+- **Response timeout**: 1 second (signature expires)
+- **Interface update interval**: 12-24 hours
+
+## Related Components
+
+- [BNE Worker](/subsystems/bne) - Breaks into discovered hosts
+- [Network Utilities](/api/network) - Address manipulation functions
+- [RND Module](/api/random) - Random number generation
+
+## References
+
+- Implementation: `src/recon.c`, `src/recon.h`
+- Standalone tool: `proone-recon`
+- RFCs: RFC7707, RFC4727

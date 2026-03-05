@@ -1,0 +1,203 @@
+---
+title: proone-pack
+description: Binary archive packaging tool
+---
+
+# proone-pack
+
+Tool for creating Binary Archives and generating recombined executables.
+
+## Overview
+
+proone-pack compresses multiple executables for different architectures into a single Binary Archive, then generates recombined executables for each architecture. This enables Proone's self-propagation across different platforms.
+
+## Usage
+
+```bash
+proone-pack <outfile prefix> <path to dvault> [path to binary 1] ...
+```
+
+### Arguments
+
+- `<outfile prefix>`: Prefix for output files
+- `<path to dvault>`: Path to DVault binary (from proone-mkdvault)
+- `[path to binary]`: One or more executable binaries
+
+## Binary Naming Convention
+
+Executables must follow the naming pattern:
+
+```
+<anything>.<os>.<arch>
+```
+
+Example:
+- `proone.linux.armv4t`
+- `proone.linux.mips`
+- `executable.linux.i686`
+
+The tool uses regex: `.*\.([a-z0-9_\-]+)\.([a-z0-9_\-]+)$`
+
+## Output Files
+
+The tool generates:
+
+1. **Nybin format**: `<prefix>.nybin`
+   - Can be used directly with `proone-htbtclient upbin --nybin`
+   - Contains DVault and Binary Archive
+   - No executable code, only data
+
+2. **Recombined executables**: `<prefix>.<os>.<arch>`
+   - Full executable for each input binary
+   - Includes ELF executable + DVault + Binary Archive
+   - Ready to run on target architecture
+
+### Example
+
+```bash
+proone-pack output/proone dvault.bin \
+  builds/proone.bin/linux.armv4t \
+  builds/proone.bin/linux.mips \
+  builds/proone.bin/linux.i686
+```
+
+Creates:
+- `output/proone.nybin`
+- `output/proone.linux.armv4t`
+- `output/proone.linux.mips`
+- `output/proone.linux.i686`
+
+## Binary Archive Format
+
+The Binary Archive consists of:
+
+```
++------------------+
+| Header (8 bytes) |
+|  - Magic: "pr-ba"|
+|  - Version: 0    |
+|  - Count: N      |
++------------------+
+| Index (N*8 bytes)|
+|  Each entry:     |
+|    - Reserved    |
+|    - Reserved    |
+|    - OS code     |
+|    - Arch code   |
+|    - Reserved    |
+|    - Size (24b)  |
++------------------+
+| Compressed data  |
+| (zlib stream)    |
++------------------+
+```
+
+## Nybin Format
+
+```
++---------------------+
+| Header (8 bytes)    |
+|  - DVault size (16b)|
+|  - Magic: "nybn"    |
+|  - Version: 0       |
++---------------------+
+| DVault (aligned)    |
++---------------------+
+| Binary Archive      |
++---------------------+
+```
+
+## Recombined Executable Format
+
+```
++----------------------+
+| ELF executable       |
+| (original binary)    |
++----------------------+
+| Alignment padding    |
++----------------------+
+| Appendix (8 bytes)   |
+|  - DVault size (16b) |
+|  - Reserved (6B)     |
++----------------------+
+| DVault (aligned)     |
++----------------------+
+| Binary Archive       |
++----------------------+
+```
+
+## Compression
+
+All executables are compressed into a single zlib stream:
+
+1. Executables read in order
+2. Compressed sequentially with zlib
+3. Single compressed stream in archive
+4. Decompressed on-demand during recombination
+
+### Compression Level
+
+Uses `PRNE_PACK_Z_LEVEL` (defined in pack.h)
+
+## Binary Recombination Testing
+
+When `ENABLE_TEST` is set (compile-time):
+
+- Generates all possible recombinations
+- Verifies binary integrity
+- Tests recursive recombination up to `TEST_DEPTH`
+- Ensures data consistency
+
+## Supported Architectures
+
+The tool supports all architectures defined in the protocol:
+
+- i686, x86_64
+- armv4t, armv6, armv7, aarch64
+- mips, mipsel, mips64
+- powerpc
+- m68k
+- sh4
+- sparc, sparc64
+
+See `prne_arch_tostr()` for the complete list.
+
+## Size Limits
+
+- Maximum individual binary size: 16,777,215 bytes (24-bit size field)
+- Maximum DVault size: 65,535 bytes (16-bit size field)
+- Maximum number of binaries: Limited by OS/arch combinations
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success |
+| 1 | Runtime error (I/O, compression, etc.) |
+| 2 | Invalid arguments or configuration |
+
+## Error Handling
+
+- Invalid file names: Skip with error message
+- Unknown OS/arch: Skip with error message
+- Duplicate binaries: Error and exit
+- Empty files: Error and exit
+- Files too large: Error and exit
+
+## Dependencies
+
+- zlib (compression)
+- DVault binary from proone-mkdvault
+
+## Integration
+
+Typically used in build process:
+
+1. Build executables for all target architectures
+2. Create DVault with proone-mkdvault
+3. Package with proone-pack
+4. Deploy generated files
+
+## Source
+
+Location: `src/proone-pack.c`

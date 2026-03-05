@@ -1,0 +1,384 @@
+---
+title: Design Decisions
+description: Key architectural choices and their rationale in Proone's design
+---
+
+This page documents the major design decisions that shape Proone's architecture and behavior.
+
+## IPv6 Support
+
+Proone is **IPv6-ready** with full support across all subsystems.
+
+### Why IPv6?
+
+The decision to prioritize IPv6 reflects both technical advantages and security assumptions:
+
+<CardGroup cols={2}>
+  <Card title="Network Oversight" icon="eye-slash">
+    IPv6 is relatively new—network administrators often overlook IPv6 configuration
+  </Card>
+  <Card title="Load Balancing" icon="scale-balanced">
+    IPv6 offers more load-balancing mechanisms like Router Advertisement (RA) and Routing Header (RH)
+  </Card>
+  <Card title="Performance" icon="gauge-high">
+    Connections with least latency/congestion complete handshake first
+  </Card>
+  <Card title="Simplicity" icon="check">
+    Avoids complexity of checking connectivity per IP version
+  </Card>
+</CardGroup>
+
+### Dual-Stack Connection Strategy
+
+When connecting to public DoT servers or Heartbeat hosts:
+
+<Steps>
+  <Step title="Simultaneous attempts">
+    Proone attempts both IPv4 and IPv6 connections in parallel
+  </Step>
+  
+  <Step title="Race to completion">
+    Whichever connection completes handshake first is initially used
+  </Step>
+  
+  <Step title="IPv6 preference">
+    If both connections establish, IPv4 connection is dropped and IPv6 is used
+  </Step>
+</Steps>
+
+<Note>
+**Minor Issue:** If IPv6 handshake takes slightly longer than IPv4, the instance uses IPv4 even though IPv6 would have completed. This edge case is acceptable given the design assumptions.
+</Note>
+
+### IPv6 Subsystem Support
+
+| Subsystem | IPv6 Features |
+|-----------|---------------|
+| **Resolv** | Supports IPv6 public DoT servers, resolves AAAA records |
+| **Recon** | ICMPv6-based link-local discovery, IPv6 network targeting |
+| **Heartbeat** | Dual-stack connections with IPv6 preference |
+| **BNE** | Exploits IPv6 hosts discovered by Recon |
+
+### Design Rationale Summary
+
+**Assumptions:**
+1. IPv6 configuration often neglected, creating security gaps
+2. Connections with optimal network conditions complete faster
+3. IPv6 infrastructure provides better redundancy
+
+**Trade-offs:**
+- Accepts minor timing edge cases for simplicity
+- Skips explicit connectivity checks (uses `getsockname()`/`gethostinfo()`)
+- Favors IPv6 even when IPv4 might be more stable
+
+---
+
+## Running Lean
+
+Proone is designed to minimize resource consumption on embedded devices.
+
+### Philosophy
+
+<Note>
+**Core Principle:** Honoring other processes on the system decreases the chance of detection by system administrators.
+</Note>
+
+This philosophy manifests in several design choices:
+
+### Single-Threaded Cooperative Multitasking
+
+Proone uses **GNU Pth (Pthsem library)** for cooperative multitasking:
+
+**Benefits:**
+- Restricts CPU usage to one logical thread
+- Minimal context switching overhead
+- Predictable resource consumption
+- No race conditions or locking complexity
+
+**Rationale:**
+```text
+Target: Resource-scarce embedded devices (most are single-core)
+Strategy: Many infected low-powered devices > Few infected high-performance systems
+```
+
+<Warning>
+This may seem like a missed opportunity on multi-core systems, but most vulnerable IoT devices are single-core anyway. The strategy prioritizes breadth over power.
+</Warning>
+
+### Compartmentalized Design
+
+Proone's architecture is **resilient to syscall failures**, particularly `ENOMEM`:
+
+<CardGroup cols={2}>
+  <Card title="Partial Initialization" icon="puzzle-piece">
+    Can run with subset of workers if some fail to start
+  </Card>
+  <Card title="Graceful Degradation" icon="arrow-down">
+    Reduced functionality is better than total failure
+  </Card>
+  <Card title="No Retries" icon="ban">
+    Assumes resources remain scarce—retrying is futile
+  </Card>
+  <Card title="Independent Subsystems" icon="cube">
+    Workers don't depend on each other for initialization
+  </Card>
+</CardGroup>
+
+### Example Scenarios
+
+**Scenario 1: No Heartbeat Worker**
+```text
+✓ Recon: Running - discovers vulnerable hosts
+✓ BNE: Running - compromises discovered hosts
+✓ Resolv: Running - available but unused
+✗ Heartbeat: Failed - cannot respond to C&C TXT REC
+
+Result: Instance continues infecting network but cannot receive commands
+```
+
+**Scenario 2: No Recon Worker**
+```text
+✓ Heartbeat: Running - responds to C&C commands
+✓ BNE: Running - awaits targets from Recon
+✓ Resolv: Running - supports Heartbeat TXT REC queries
+✗ Recon: Failed - no new targets discovered
+
+Result: Instance serves backdoor and responds to C&C but cannot spread
+```
+
+### BNE Worker Pool Management
+
+The BNE worker pool exemplifies "running lean":
+
+- **Maximum 128 workers** - Arbitrary limit rarely reached in practice
+- **Lowest priority** - Prevents starvation of vital workers
+- **Graceful ENOMEM** - Stops spawning when memory exhausted
+- **No cleanup attempts** - Accepts current state when resources depleted
+
+<Steps>
+  <Step title="Normal operation">
+    BNE workers spawn as Recon discovers targets
+  </Step>
+  
+  <Step title="Memory pressure">
+    System approaches memory limit
+  </Step>
+  
+  <Step title="ENOMEM failure">
+    New BNE spawn attempts fail with ENOMEM
+  </Step>
+  
+  <Step title="Continued operation">
+    Existing workers complete; no new workers spawn; other subsystems unaffected
+  </Step>
+</Steps>
+
+### Resource Conservation Techniques
+
+| Technique | Implementation | Benefit |
+|-----------|----------------|----------|
+| **Connection pooling** | Resolv keeps DoT connections open | Reduces handshake overhead |
+| **Minimal dependencies** | Only essential libraries (libssh2, mbedtls, zlib, pthsem) | Smaller binary size |
+| **Data masking** | DVault XORs sensitive data | Security without crypto overhead |
+| **Single-stream BA** | Compressed executables in one stream | Maximizes compression ratio |
+
+---
+
+## Ephemeral Presence
+
+Proone makes **no attempt to seek permanent residency** on infected devices.
+
+### Rationale
+
+This design choice serves multiple security and operational goals:
+
+<CardGroup cols={2}>
+  <Card title="Hard to Capture" icon="shield">
+    Makes executable difficult to retrieve from infected device
+  </Card>
+  <Card title="No Forensic Trace" icon="eraser">
+    Memory-backed filesystems leave no traces after power cycle
+  </Card>
+  <Card title="Device Protection" icon="hard-drive">
+    Avoids filling small flash storage on IoT devices
+  </Card>
+  <Card title="Operational Security" icon="user-secret">
+    Reduces detection surface for incident responders
+  </Card>
+</CardGroup>
+
+### Mirai Comparison
+
+Both Mirai and Proone delete executables immediately after process starts:
+
+**Mirai Approach:**
+- Deletes executable after startup
+- Uses any read-writable mount point for upload
+- Still capturable from filesystem before deletion
+- Can be dumped from memory with development tools
+
+**Proone Enhancement:**
+- Deletes executable after startup (same as Mirai)
+- **Only uses tmpfs and devtmpfs mount points** (memory-backed)
+- Eliminates traces on non-volatile storage
+- Still dumpable from memory, but requires development tools
+
+### Memory-Backed Filesystem Strategy
+
+<Steps>
+  <Step title="Target identification">
+    BNE worker identifies only tmpfs and devtmpfs mount points
+  </Step>
+  
+  <Step title="Upload to RAM">
+    Executable uploaded to memory-backed filesystem
+  </Step>
+  
+  <Step title="Execution">
+    Binary executed from tmpfs/devtmpfs
+  </Step>
+  
+  <Step title="Self-deletion">
+    Process deletes executable immediately after startup
+  </Step>
+  
+  <Step title="Power cycle">
+    Reboot erases all traces—no forensic evidence on disk
+  </Step>
+</Steps>
+
+<Warning>
+**Important:** While the executable can still be captured through core dumps or memory inspection, this requires:
+- Development tools on the device
+- Kernel support for core dumps
+- Technical expertise
+
+Ordinary embedded devices lack these capabilities, making capture nearly impossible in the wild.
+</Warning>
+
+### Storage Considerations
+
+**Why Memory-Backed Filesystems?**
+
+Typical embedded device profile:
+- Small SPI flash memory (often < 16MB)
+- Relatively larger RAM (32MB-128MB common)
+- Proone binary is large (carries executables for multiple architectures)
+
+```text
+Traditional Approach:
+  Flash: [██████████] 100% Full - Upload fails
+  RAM:   [███░░░░░░░]  30% Used
+
+Proone Approach:
+  Flash: [██████░░░░]  60% Used - Never touched
+  RAM:   [██████░░░░]  60% Used - Temporary executable
+```
+
+### Capture Difficulty Comparison
+
+| Scenario | Mirai | Proone |
+|----------|-------|--------|
+| **Before execution** | Retrievable from filesystem | Retrievable from tmpfs |
+| **After execution** | Deleted, memory dump needed | Deleted, memory dump needed |
+| **After reboot** | May persist in flash | Completely erased |
+| **Forensic analysis** | Disk forensics possible | No disk traces |
+| **Capture difficulty** | Hard | Very hard |
+
+<Note>
+**Historical Context:** It would have been nearly impossible to capture the Mirai executable running in the wild due to the self-deletion technique. Proone takes this further by ensuring even the upload location leaves no persistent traces.
+</Note>
+
+### Security vs. Persistence Trade-off
+
+**Advantages:**
+- Extremely difficult to analyze
+- No forensic footprint after power cycle
+- Fits better in RAM than flash on IoT devices
+- Network administrators cannot easily obtain samples
+
+**Disadvantages:**
+- No persistence—reboot cleans infection
+- Must re-infect devices after power cycles
+- Relies on continuous reinfection through network scanning
+
+<Note>
+The trade-off favors operational security over persistence. The design assumes that maintaining low detectability is more valuable than surviving reboots, especially given Proone's autonomous spreading capability.
+</Note>
+
+---
+
+## Additional Design Principles
+
+### Wide Device Compatibility
+
+Proone targets the broadest possible range of Linux devices:
+
+<Steps>
+  <Step title="Old POSIX standards">
+    Coded to `_POSIX_C_SOURCE=200112L` standard for compatibility with old Linux 2.6.x kernels
+  </Step>
+  
+  <Step title="No filesystem assumptions">
+    Doesn't assume `/proc`, `/sys`, or `/dev` are available (can be disabled on embedded Linux)
+  </Step>
+  
+  <Step title="Kernel configuration agnostic">
+    Works across diverse kernel configurations found on IoT devices
+  </Step>
+  
+  <Step title="Graceful feature degradation">
+    Silently disables features when APIs return `ENOSYS`
+  </Step>
+</Steps>
+
+<Warning>
+The `_POSIX_C_SOURCE=200112L` macro doesn't prevent use of newer APIs—it only provides hints. Code may compile but fail at runtime with `ENOSYS` on old kernels if newer syscalls are used.
+</Warning>
+
+### Minimal Dependencies
+
+Dependencies kept to absolute necessities:
+
+**Runtime Dependencies:**
+- `libssh2` - SSH brute force vector
+- `mbedtls` - TLS connections (DoT, Heartbeat protocol)
+- `zlib` - Binary archive compression
+- `pthsem` - Cooperative multitasking
+
+**Build-Only Dependencies:**
+- `libyaml` - Configuration file parsing (hostinfod)
+- `mariadb-connector-c` - Database backend (hostinfod)
+
+<Note>
+All libraries compiled with default configurations to minimize build complexity and maintain consistency across platforms.
+</Note>
+
+## Design Philosophy Summary
+
+<CardGroup cols={3}>
+  <Card title="IPv6-First" icon="6">
+    Leverage overlooked IPv6 configurations and modern network features
+  </Card>
+  <Card title="Resource-Conscious" icon="microchip">
+    Minimize footprint to avoid detection and honor system resources
+  </Card>
+  <Card title="Ephemeral" icon="ghost">
+    No persistence—prioritize operational security over survival
+  </Card>
+  <Card title="Compartmentalized" icon="boxes-stacked">
+    Independent subsystems allow graceful degradation
+  </Card>
+  <Card title="Compatible" icon="plug">
+    Support widest range of Linux devices and kernel configurations
+  </Card>
+  <Card title="Minimal" icon="minimize">
+    Only essential dependencies and features
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<Card title="Binary Architecture" icon="file-code" href="/binary/data-vault">
+  Learn about Binary Archive, DVault, and binary recombination
+</Card>

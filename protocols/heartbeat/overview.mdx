@@ -1,0 +1,162 @@
+---
+title: "Heartbeat Protocol Overview"
+description: "Introduction to the Proone Heartbeat protocol - a framing protocol for command and control"
+---
+
+## Introduction
+
+The Heartbeat Protocol is the core communication protocol used by Proone instances for command and control operations. It can work over both DNS TXT records and TCP/IP connections, providing flexibility for different deployment scenarios.
+
+## Protocol Characteristics
+
+### Design Principles
+
+- **Big-endian protocol**: All multi-byte values are transmitted in network byte order
+- **Unaligned frames**: Frames are not aligned to minimize packet footprint
+- **Blackbox interface design**: Unified function pointer types for serialization/deserialization
+- **No bit fields**: Avoided for performance and portability
+- **Pipelined sessions**: Multiple sessions can be pipelined into a single connection
+
+### Connection Model
+
+A complete heartbeat connection consists of:
+
+- **Authoritative host**: Issues commands and requests
+- **Submissive host**: Executes commands and responds to requests
+
+Either end of the TCP/IP connection can assume either role, providing flexibility in the communication model.
+
+## Sessions and Messages
+
+### Session Structure
+
+A **session** is a series of messages identified by a single message id. Each message consists of one or more frames:
+
+```
++------------+-------+------------+-------+-----+------------+-------+
+| Msg Header | Frame | Msg Header | Frame | ... | Msg Header | Frame |
++------------+-------+------------+-------+-----+------------+-------+
+
+| ---- Message ----- | ---- Message ----- | ... | ---- Message ----- |
+
+| -- Session Init -- | - Session continued .. - | - Terminator Msg - |
+
+| ---------------------------- Session ----------------------------- |
+```
+
+### Key Concepts
+
+- All message headers in a session share the same message id
+- The OP code in the message header dictates the format of the following frame
+- Sessions can be pipelined for efficient use of connection bandwidth
+- Multiple sessions can run concurrently on a single TCP/IP connection
+
+### Special Message IDs
+
+| ID | Value | Purpose |
+|----|-------|--------|
+| NOOP | `0x0000` | Reserved for No Operation sessions |
+| Notification | `0x7FFF` | One-way messages with no response expected |
+| Session IDs | `0x0001` - `0x7FFE` | Normal session identifiers |
+
+## Transport Mechanisms
+
+### TCP/IP Connections
+
+Direct TLS-encrypted connections on port **64420** (default). Both server and client verify certificates to prevent unauthorized access.
+
+#### TLS Configuration
+
+- **ALPN string**: `prne-htbt`
+- **Mutual authentication**: Both endpoints verify certificates
+- **Embedded credentials**: CA cert, DH param, and keys are hardcoded in binaries
+- **Domain enforcement**: PKI structure enforces operational domains
+
+### DNS TXT Records (TXT REC CNC)
+
+Instances can be controlled via DNS TXT records containing serialized request sessions. This provides:
+
+- **Resilience**: No direct connection required
+- **Privacy**: DNS over TLS used for queries
+- **Simplicity**: No server infrastructure needed for simple tasks
+- **Load distribution**: Multiple DNS values enable load balancing
+
+See [TXT REC CNC](/protocols/heartbeat/txt-rec-cnc) for detailed information.
+
+## Buffer Requirements
+
+### Minimum Buffer Sizes
+
+| Context | Size | Purpose |
+|---------|------|--------|
+| General parsing | 1,031 bytes | `PRNE_HTBT_PROTO_MIN_BUF` |
+| Submissive host | 617 bytes | `PRNE_HTBT_PROTO_SUB_MIN_BUF` |
+
+These sizes ensure all protocol frames can be parsed and transmitted.
+
+## Use Cases
+
+### M2M Communication
+
+Proone instances check for existing infections via a "local back door" (LBD) on port 64420:
+
+- **M2M handshake**: Detect already-infected hosts
+- **Version checking**: Upgrade to newer versions when detected
+- **Maintenance**: Use `proone-htbtclient` to examine and maintain instances
+
+### Custom Authoritative Servers
+
+For complex operations, implement custom authoritative servers:
+
+- Full protocol access for sophisticated control
+- Load balancing via DNS (round-robin, GeoDNS)
+- Example implementation: `proone-hostinfod`
+
+## Common Operations
+
+### Shell Script Execution
+
+Run shell scripts with `PRNE_HTBT_OP_RUN_BIN`:
+
+```bash
+#!/bin/sh
+reboot -nf  # Reboot host, terminates Proone
+```
+
+**Note**: Target Bourne shell compatibility. Most embedded devices use lightweight shells (Ash/BusyBox, Toysh/Toybox).
+
+### Binary Deployment
+
+1. Query host architecture with `PRNE_HTBT_OP_HOST_INFO`
+2. Select appropriate binary for the platform
+3. Upload with `PRNE_HTBT_OP_UP_BIN` (upgrade instance) or `PRNE_HTBT_OP_RUN_BIN` (run arbitrary binary)
+
+### Instance Upgrade
+
+Use `PRNE_HTBT_OP_UP_BIN` to replace the Proone executable:
+
+- Instance performs `exec()` to switch to new binary
+- Preserves instance state across upgrade
+- Verify success by reconnecting and querying version
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Frame Format" icon="diagram-project" href="/protocols/heartbeat/framing">
+    Learn about message structure and frame types
+  </Card>
+  <Card title="TXT REC CNC" icon="globe" href="/protocols/heartbeat/txt-rec-cnc">
+    DNS-based command and control mechanism
+  </Card>
+  <Card title="Data Formats" icon="binary" href="/protocols/data-formats">
+    Binary archive and data vault formats
+  </Card>
+</CardGroup>
+
+## Reference Implementation
+
+See the following source files for implementation details:
+
+- `src/protocol.h`: Protocol definitions and structures
+- `src/protocol.c`: Serialization/deserialization implementation
+- `doc/htbt.md`: Complete protocol specification

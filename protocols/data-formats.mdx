@@ -1,0 +1,351 @@
+---
+title: "Data Formats"
+description: "Binary data structures used by Proone: DVault, Binary Archive, NYBIN, and Credential Dictionary"
+---
+
+## Overview
+
+Proone uses several specialized binary formats for storing configuration data, executables, and credentials. These formats are designed for efficiency and obfuscation.
+
+## Data Vault (DVault)
+
+The Data Vault is an encrypted key-value store for sensitive configuration data embedded in Proone executables.
+
+### Structure
+
+```
+             0                   1                   2                   3
+             0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+           0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+             |                                                               |
+             +                      mask key (256 bytes)                     +
+             .                                                               .
+ 256         +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+             |          offset_1             |          offset_2             |
+             .                             ...                               .
+ 256 + 2*N   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+             | data entries (variable length)
+             +-----
+```
+
+### Components
+
+| Field | Type | Description |
+|-------|------|-------------|
+| mask | 256 bytes | Random XOR mask key (unique per build) |
+| offset_n | uint16 | Offset to start of nth entry |
+| data_entries | variable | Series of masked data entries |
+
+Where `N` = `NB_PRNE_DATA_KEY` (number of entries)
+
+### Entry Format
+
+```
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ 0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |     salt      |     type      |           data_size           |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   | data (variable length, masked)
+   +-----
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| salt | uint8 | XOR salt offset |
+| type | uint8 | Data type code |
+| data_size | uint16 | Data length in bytes (masked) |
+| data | variable | Actual data (masked) |
+
+### Data Types
+
+| Type | Value | Description |
+|------|-------|-------------|
+| `CSTR` | 0x00 | 8-bit character string (UTF-8) |
+| `BIN` | 0x02 | Binary data |
+
+### Masking Algorithm
+
+```c
+for (size_t i = 0; i < size; i += 1) {
+    ((uint8_t*)m)[i] ^= mask[(i + salt) % 256];
+}
+```
+
+Where:
+- `size`: Length of data to mask/unmask
+- `m`: Pointer to data
+- `mask`: 256-byte mask key
+- `salt`: 8-bit offset into mask
+
+### Usage Pattern
+
+1. Unmask `data_size` field to determine entry length
+2. Unmask entry data using same algorithm
+3. Use the data
+4. **Immediately re-mask** with `prne_dvault_reset()` to keep data obscured in memory
+
+### Limits
+
+- **Maximum total size**: ~65,535 bytes (16-bit offsets)
+- **Per-entry size**: Up to 65,535 bytes
+- **Build-specific**: DVault is valid only for the build it was created with
+
+### Implementation
+
+- **Builder**: `src/proone-mkdvault.h`, `src/proone-mkdvault.c`
+- **Runtime**: `src/dvault.h`, `src/dvault.c`
+
+## Binary Archive
+
+Stores multiple architecture-specific executables in a compressed format.
+
+### Archive Structure
+
+```
+            0                   1                   2                   3
+            0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+         0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+           |                       signature (5 bytes)                     |
+         4 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+           | signature |      rev      |            nb_bin             |
+         8 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+           |                                                               |
+           .                        index (N entries)                      .
+           |                                                               |
+ 8 + 8*N   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+           | compressed executable data
+           +-----
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| signature | 5 bytes | Magic: `70 72 2d 62 61` ("pr-ba") |
+| rev | uint8 | Format revision (0) |
+| nb_bin | uint16 | Number of executables |
+| index | variable | Index entries (8 bytes each) |
+| data | variable | Compressed executable stream |
+
+### Index Entry Format
+
+```
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ 0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |              rsv              |    os_code    |   arch_code   |
+ 4 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |      rsv      |                     size                      |
+ 8 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| rsv | - | Zero padding (alignment) |
+| os_code | uint8 | OS code (see Heartbeat protocol) |
+| arch_code | uint8 | CPU architecture code |
+| size | uint24 | Uncompressed executable size |
+
+### Binary Extraction
+
+1. Locate index entry for target OS/arch
+2. Calculate offset: sum of all preceding executable sizes
+3. Decompress from that offset
+4. Read `size` bytes of decompressed data
+
+### Implementation
+
+- **Builder**: `src/proone-pack.c`
+- **Runtime**: `src/pack.h`, `src/pack.c`
+
+## NYBIN Format
+
+Combines Data Vault and Binary Archive for complete Proone deployment packages.
+
+### Structure
+
+```
+        0                   1                   2                   3
+        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |            dv_len             |         signature ...         |
+     4 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |                 signature ...                 |      rev      |
+     8 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |                                                               |
+       .                  dv_data (padded to 8-byte boundary)          .
+       |                                                               |
+ 8 + L +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       | binary archive (full structure)
+       +-----
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| dv_len | uint16 | Data vault length (unpadded) |
+| signature | 5 bytes | Magic: `6e 79 62 69 6e` ("nybin") |
+| rev | uint8 | Format revision |
+| dv_data | variable | Data vault (padded to 8 bytes) |
+| ba | variable | Complete binary archive |
+
+Where `L` = padded length of `dv_data`
+
+### File Extension
+
+- **Extension**: `.nybin`
+- **MIME type**: application/x-proone-nybin (unofficial)
+
+### Magic Signature
+
+For `magic(5)` / `file` command:
+
+```mgc
+2       string          nybin           Proone NYBIN file,
+>7      byte            x               revision %u
+```
+
+### Use Cases
+
+1. **Binary upgrade**: Upload via `PRNE_HTBT_OP_UP_BIN`
+2. **Index case**: Launch initial instance on new infrastructure
+3. **Maintenance**: Update instance binaries and configuration
+
+### Implementation
+
+- **Builder**: `src/proone-pack.c`
+- **Runtime**: `src/pack.h`, `src/pack.c`
+
+## Credential Dictionary
+
+Stores username/password combinations for brute-force attacks.
+
+### Text Format (Source)
+
+Human-readable format for building credential dictionaries:
+
+```
+<WEIGHT>    <USERNAME>    [PASSWORD]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| WEIGHT | Yes | Priority value (0-255) |
+| USERNAME | Yes | Username string |
+| PASSWORD | No | Password string (empty if omitted) |
+
+#### Rules
+
+- **Encoding**: UTF-8 without BOM
+- **Separators**: One or more whitespace characters
+- **Comments**: Lines starting with `#` are ignored
+- **Whitespace**: Leading/trailing whitespace trimmed
+- **Limitation**: No whitespace allowed in username/password
+
+#### Example
+
+```
+# Common IoT credentials
+200    admin      admin
+180    root       root
+150    admin      password
+100    admin      12345
+50     admin      
+30     guest      guest
+```
+
+### Binary Format
+
+Compact binary format for runtime use:
+
+```
+      0                   1
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+ 0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |              cnt              |
+ 2 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                               |
+   .        entries (5*cnt bytes)  .
+   |                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                               |
+   .      strings (null-term)      .
+   |                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+### Entry Tuple
+
+```
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ 0 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |            idx_id             |            idx_pw             |
+ 4 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |    weight     |
+ 5 +-+-+-+-+-+-+-+-+
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| idx_id | uint16 | Offset to username string |
+| idx_pw | uint16 | Offset to password string |
+| weight | uint8 | Selection priority (0-255) |
+
+### Weight-Based Selection
+
+Higher weight values have higher selection probability. Use weights to:
+
+- Prioritize common credentials
+- Reflect device prevalence
+- Optimize attack efficiency
+
+### String Pool
+
+Null-terminated strings stored sequentially:
+
+```
+admin\0password\0root\0123456\0\0guest\0...
+```
+
+- **Empty password**: Single null terminator (offset points to `\0`)
+- **Zero-based**: Offset 0 = first character
+- **Shared strings**: Multiple entries can reference same string
+
+### Implementation
+
+- **Converter**: `src/proone-mkcdict.c`
+- **Runtime**: `src/cred_dict.h`, `src/cred_dict.c`
+
+## Format Summary
+
+| Format | Purpose | Key Feature |
+|--------|---------|-------------|
+| **DVault** | Configuration storage | XOR obfuscation |
+| **Binary Archive** | Multi-arch executables | Compressed stream |
+| **NYBIN** | Complete package | DVault + Archive |
+| **Cred Dict** | Attack credentials | Weight-based selection |
+
+## Build Tools
+
+| Tool | Purpose | Output |
+|------|---------|--------|
+| `proone-mkdvault` | Create data vault | DVault binary |
+| `proone-pack` | Combine components | NYBIN file |
+| `proone-mkcdict` | Convert credentials | Cred dict binary |
+
+## Related Topics
+
+<CardGroup cols={2}>
+  <Card title="Heartbeat Protocol" icon="heart-pulse" href="/protocols/heartbeat/overview">
+    Communication protocol using these formats
+  </Card>
+  <Card title="Binary Archive" icon="box-archive" href="/binary/binary-archive">
+    Multi-architecture deployment
+  </Card>
+</CardGroup>
+
+## Source Reference
+
+- `doc/fmts.md`: Complete format specifications
+- `src/dvault.h`, `src/dvault.c`: DVault implementation
+- `src/pack.h`, `src/pack.c`: Binary archive and NYBIN
+- `src/cred_dict.h`, `src/cred_dict.c`: Credential dictionary

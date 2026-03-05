@@ -1,0 +1,162 @@
+---
+title: Introduction
+description: Overview of the Proone Worm Project, a Linux worm designed for security research and education
+---
+
+## What is Proone?
+
+**Proone** is a Linux worm designed to target unconfigured IoT embedded devices with MMU (Memory Management Unit). This project represents a reengineered version of the Mirai botnet, developed with a serious approach to understanding modern IoT security vulnerabilities.
+
+<Warning>
+  This software is malware. Read the [Security Notice](/security-notice) before proceeding.
+</Warning>
+
+## Key Capabilities
+
+Proone features several advanced capabilities that distinguish it from its predecessors:
+
+<CardGroup cols={2}>
+  <Card title="Self-Contained Operation" icon="box">
+    Complete breaking and entering capabilities with autonomous replication across vulnerable devices
+  </Card>
+  
+  <Card title="IPv6 Support" icon="network-wired">
+    Full IPv6 readiness with discovery and connectivity for modern network environments
+  </Card>
+  
+  <Card title="DNS over TLS CNC" icon="shield-halved">
+    Command and control using DNS over TLS for encrypted, difficult-to-analyze communications
+  </Card>
+  
+  <Card title="Binary Recombination" icon="shuffle">
+    Self-contained executable archive for multiple architectures enabling decentralized propagation
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+Proone consists of four main subsystems working organically to infect hosts and maintain control:
+
+### Core Subsystems
+
+<AccordionGroup>
+  <Accordion title="Heartbeat Worker" icon="heartbeat">
+    Provides backdoor and command-and-control (CNC) mechanism on infected devices. Maintains persistent communication and allows remote maintenance access.
+    
+    **Key Features:**
+    - Point-to-point and broadcast framing protocol
+    - Works over TCP/IP transport streams
+    - Two-way certificate verification
+    - ALPN protocol checking
+  </Accordion>
+
+  <Accordion title="Recon Worker" icon="radar">
+    Discovers vulnerable nodes on both the internet and link-local networks through active scanning.
+    
+    **Key Features:**
+    - Fabricated SYN packet scanning
+    - IPv4 and IPv6 network discovery
+    - ICMPv6 probing for IPv6 hosts
+    - Configurable target and blacklist networks
+  </Accordion>
+
+  <Accordion title="BNE Worker Pool" icon="user-secret">
+    Break-and-Enter workers exploit vulnerabilities to gain access to target hosts.
+    
+    **Key Features:**
+    - Credential dictionary brute force
+    - M2M binary upgrade capability
+    - Extensible vulnerability interface
+    - Multiple concurrent worker instances
+  </Accordion>
+
+  <Accordion title="Resolv Worker" icon="globe">
+    Custom DNS resolver designed specifically for Proone's TXT record CNC mechanism.
+    
+    **Key Features:**
+    - DNS over TLS (DoT) support
+    - Promise-future query model
+    - Hardcoded public name servers
+    - Connection pooling and failover
+  </Accordion>
+</AccordionGroup>
+
+## Technical Highlights
+
+<CardGroup cols={2}>
+  <Card title="Binary Archive System" icon="archive">
+    Carries executables for multiple architectures (ARM, MIPS, x86, PowerPC, M68K, SH4) enabling self-propagation without external binary distribution servers.
+  </Card>
+  
+  <Card title="Data Vault" icon="vault">
+    Masked storage for sensitive data including credentials and CNC configuration, protected from memory dumps and string analysis.
+  </Card>
+  
+  <Card title="Ephemeral Presence" icon="ghost">
+    Deletes executable on startup and uses only memory-backed filesystems (tmpfs/devtmpfs) to avoid leaving traces on non-volatile storage.
+  </Card>
+  
+  <Card title="Resource Efficient" icon="gauge">
+    Uses cooperative multitasking (GNU Pth) to run on resource-constrained embedded devices with minimal CPU and memory footprint.
+  </Card>
+</CardGroup>
+
+## Documentation Structure
+
+This documentation is organized into the following sections:
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/build/building">
+    Installation, compilation, and initial configuration
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/architecture/overview">
+    In-depth subsystem design and implementation details
+  </Card>
+  
+  <Card title="Protocols" icon="code" href="/protocols/heartbeat/overview">
+    Heartbeat protocol, data formats, and communication specs
+  </Card>
+  
+  <Card title="Tools & Utilities" icon="wrench" href="/tools/proone">
+    Standalone tools, testing utilities, and maintenance clients
+  </Card>
+</CardGroup>
+
+<Note>
+  Proone is designed for security research and educational purposes. Always operate in controlled, isolated environments.
+</Note>
+
+## Project Goals
+
+The original concept behind Proone (derived from "pruning") was to understand how vulnerable IoT devices could be systematically identified and potentially removed from the internet. The project explores:
+
+- **IoT Security Vulnerabilities**: Neglected devices with unpatched software
+- **Predictable Security Flaws**: Default credentials and maintenance backdoors
+- **Network Propagation**: Self-replication techniques across heterogeneous architectures
+- **Detection Evasion**: Methods used by malware to avoid detection and analysis
+
+<Warning>
+  This project was developed as an "art project" to understand security vulnerabilities. The author explicitly abandoned any operational deployment ideas before publication.
+</Warning>
+
+## Dependencies
+
+Proone relies on minimal, essential dependencies:
+
+- **libssh2**: SSH brute force vector implementation
+- **Mbedtls**: TLS connections for DNS and Heartbeat protocol
+- **zlib**: Binary archive compression
+- **Pthsem**: Cooperative multitasking/threading
+- **libyaml**: Configuration file parsing (hostinfod)
+- **mariadb-connector-c**: Database backend (hostinfod)
+
+## Copyright
+
+Copyright (c) 2019-2022 David Timber &lt;dxdt@dev.snart.me&gt;
+
+---
+
+<Card title="Read the Foreword" icon="book-open" href="/foreword">
+  Learn about the project's origins and the author's perspective
+</Card>

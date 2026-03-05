@@ -1,0 +1,160 @@
+---
+title: proone-recon
+description: Standalone reconnaissance worker testing tool
+---
+
+# proone-recon
+
+Standalone tool for testing the Recon (reconnaissance) worker functionality.
+
+## Overview
+
+proone-recon runs the Recon worker independently to discover hosts with open ports on specified networks. It's useful for testing network configurations and port scanning.
+
+## Usage
+
+```bash
+proone-recon <conf> <port 1> [port 2] ... [port n]
+```
+
+### Arguments
+
+- `<conf>`: Path to configuration file (use `-` to read from stdin)
+- `<port>`: One or more TCP ports to scan (required)
+
+## Configuration Format
+
+The configuration file specifies target networks and blacklists:
+
+```
+<ENTRY SPEC> <NET SPEC>
+```
+
+Where:
+- `<ENTRY SPEC>`: `T` for target or `BL` for blacklist
+- `<NET SPEC>`: `<IPv4 or IPv6 Address>/<CIDR>`
+
+Notes:
+- Parsed case-insensitively
+- Lines starting with `#` are ignored as comments
+- Empty lines are ignored
+
+### Example Configuration
+
+```
+# Test pool A
+T	192.168.0.0/24
+
+# Test pool B  
+T	192.168.1.0/24
+
+# Test pool C (IPv6)
+T	fc00:A::/96
+
+# Test pool D (IPv6)
+T	fc00:B::/96
+
+# My Private Net (IPv4) - blacklisted
+BL	192.168.0.1/24
+
+# My Private Net (IPv6) - blacklisted  
+BL	fd00:ABBA::/64
+```
+
+## Operation
+
+The tool:
+
+1. Generates random IP addresses within target networks
+2. Sends fabricated TCP SYN packets to specified ports
+3. Listens for SYN+ACK responses
+4. Outputs discovered endpoints to stdout
+5. Excludes blacklisted networks
+
+### Discovery Methods
+
+**IPv4**: Sends TCP SYN packets directly
+
+**IPv6**: Two-phase discovery
+1. Multicasts ICMPv6 ECHO with bogus DSTOPT (0x9e)
+2. Nodes respond with ICMPv6 type 4, code 2 (parameter problem)
+3. Sends TCP SYN to confirm port is open
+
+## Output Format
+
+Discovered endpoints are printed to stdout:
+
+```
+# IPv4
+192.168.1.100:23
+192.168.1.101:22
+
+# IPv6 with scope ID
+[fe80::1%2]:23
+[fc00:a::100]:22
+```
+
+## Signal Handling
+
+The tool runs until terminated with:
+- `SIGTERM`
+- `SIGINT` (Ctrl+C)
+
+## Raw Sockets
+
+The Recon worker creates 4 raw sockets:
+- IPv4 send socket
+- IPv4 receive socket
+- IPv6 send socket
+- IPv6 receive socket
+
+**Note**: Requires elevated privileges (root or `CAP_NET_RAW`)
+
+## Timing
+
+- One iteration cycle: ~1 second ± jitter
+- Effectively a 1-second timeout for SYN+ACK responses
+- Packets from previous cycles are ignored
+
+## Signature Mechanism
+
+Each cycle generates unique signatures in SYN packets:
+- Allows distinguishing responses from background traffic
+- Kernel automatically sends RST to unrecognized SYN+ACK packets
+
+## Link-Local Discovery
+
+For IPv6 link-local networks:
+- Uses link-local addresses from network interfaces
+- Requires scope IDs for correct operation
+- Platform-specific APIs query interface addresses
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success (clean shutdown) |
+| 1 | Runtime error |
+| 2 | Configuration error |
+
+## Example Usage
+
+```bash
+# Scan for SSH and Telnet on local network
+sudo proone-recon network.conf 22 23
+
+# Read config from stdin
+cat <<EOF | sudo proone-recon - 80 443
+T	10.0.0.0/24
+BL	10.0.0.1/32
+EOF
+
+# IPv6 discovery
+sudo proone-recon ipv6.conf 22 23 80 443
+```
+
+## Source
+
+Location: `src/proone-recon.c`
+
+Sample configuration: `src/data/recon.sample.conf`

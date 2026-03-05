@@ -1,0 +1,222 @@
+---
+title: Building Proone
+description: Step-by-step instructions for building Proone from source using autotools
+---
+
+## Overview
+
+Proone uses the GNU Autotools build system (autoconf/automake) to compile the worm and its associated tools. The build process generates executables for the host platform and can be configured for cross-compilation to target embedded devices.
+
+## Prerequisites
+
+### Required Dependencies
+
+Before building Proone, ensure the following libraries and tools are installed:
+
+#### Core Libraries
+
+- **pthread** - POSIX threads library for multithreading support
+- **rt** - Real-time extensions (provides `shm_open`)
+- **zlib** - Compression library for binary archive
+- **mbedtls** (mbedcrypto, mbedx509, mbedtls) - TLS/SSL library for encrypted communications
+- **libssh2** - SSH2 protocol library for SSH brute force vector
+- **pthsem** - GNU Portable Threads with semaphore support for cooperative multitasking
+
+#### Optional Dependencies (for Maintenance Tools)
+
+Required only when building with `--enable-mttools`:
+
+- **libyaml** - YAML parser for configuration files
+- **mariadb-connector-c** - MariaDB client library for hostinfo daemon
+- **mbedtls with threading support** - mbedtls must be compiled with `MBEDTLS_THREADING_C` enabled
+
+#### Build Tools
+
+- **autoconf** - GNU Autoconf for configuration script generation
+- **automake** - GNU Automake for Makefile generation
+- **gcc** - GNU C compiler
+- **xxd** - Hexdump tool (part of vim-common)
+- **sed** - Stream editor for text processing
+
+Refer to ~/workspace/source/doc/sws.md:328-337 for the complete dependency list.
+
+## Build Process
+
+### Step 1: Bootstrap the Build System
+
+After cloning the repository or making changes to `.ac` or `.am` files, run the bootstrap script to initialize autotools:
+
+```bash
+./bootstrap.sh
+```
+
+This script runs:
+- `aclocal` - Generate aclocal.m4
+- `autoheader` - Generate config header template
+- `automake --add-missing --copy` - Create Makefile templates
+- `autoconf` - Generate configure script
+
+See ~/workspace/source/bootstrap.sh:13-16 for implementation details.
+
+### Step 2: Configure the Build
+
+Run the configure script to detect system capabilities and set up the build:
+
+```bash
+./configure [OPTIONS]
+```
+
+The configure script will:
+- Detect the C compiler and build tools
+- Check for required libraries
+- Generate `src/config_gen.h` with build configuration
+- Create Makefiles for building
+
+See the [Configuration Options](/build/configuration) page for available configure flags.
+
+### Step 3: Compile
+
+Build the project using make:
+
+```bash
+make -j$(nproc)
+```
+
+This compiles:
+- **proone.bin** - Core worm executable (ELF part only, not runnable standalone)
+- **proone** - Complete executable with DVault appended
+- Build tools (when `--enable-mttools` is used)
+
+### Step 4: Build Data Vault and Credential Dictionary
+
+Generate the required binary data files:
+
+```bash
+# Build credential dictionary
+cd src
+./proone-mkcdict proone_conf/cred_dict.txt cred_dict.bin
+
+# Build data vault
+./proone-mkdvault cred_dict.bin > dvault.bin
+```
+
+The data vault (DVault) contains masked sensitive data like:
+- CNC TXT record domains
+- Credential dictionary for brute force attacks
+- Network targeting configuration
+
+## Build Outputs
+
+### Executables
+
+After building, executables are located in the `src/` directory:
+
+#### Core Executable
+- `src/proone.bin` - ELF executable (requires DVault and BA to run)
+- `src/proone` - Complete executable with DVault
+
+#### Testing Tools
+- `proone-recon` - Standalone recon worker for testing
+- `proone-resolv` - Standalone DNS resolver testing tool
+- `proone-htbthost` - Standalone heartbeat worker for testing
+- `proone-bne` - Standalone break-and-enter tool
+- `proone-stress` - CPU stress testing tool
+- `proone-test_proto` - Protocol test suite
+- `proone-test_util` - Utility function test suite
+
+#### Build Tools
+- `proone-pack` - Binary archive build tool
+- `proone-mkcdict` - Credential dictionary builder
+- `proone-mkdvault` - Data vault builder
+- `proone-list-arch` - Architecture listing tool
+- `proone-ipaddr-arr` - IP address to C array converter
+
+#### Maintenance Tools (with --enable-mttools)
+- `proone-hostinfod` - Hostinfo daemon (authoritative heartbeat server)
+- `proone-htbtclient` - Heartbeat client for instance maintenance
+
+See ~/workspace/source/doc/sws.md:360-382 for complete executable list.
+
+## Basic Build Example
+
+For a standard debug build:
+
+```bash
+# Bootstrap autotools
+./bootstrap.sh
+
+# Configure with debug flags
+./configure --enable-debug
+
+# Build
+make -j$(nproc)
+
+# Generate data files
+cd src
+./proone-mkcdict proone_conf/cred_dict.txt cred_dict.bin
+./proone-mkdvault cred_dict.bin > dvault.bin
+```
+
+## Production Build Example
+
+For an optimized production build with static linking:
+
+```bash
+./bootstrap.sh
+./configure --enable-static
+make -j$(nproc)
+cd src
+./proone-mkcdict proone_conf/cred_dict.txt cred_dict.bin
+./proone-mkdvault cred_dict.bin > dvault.bin
+```
+
+## Cleaning Up
+
+To clean build artifacts:
+
+```bash
+# Remove compiled objects and executables
+make clean
+
+# Remove all generated files (including configure)
+make distclean
+```
+
+## Troubleshooting
+
+### Library Not Found Errors
+
+If configure fails with library errors like "mbedtls not found" or "pthsem not found":
+
+1. Install the missing library through your package manager
+2. If installed in a non-standard location, set `LDFLAGS` and `CPPFLAGS`:
+
+```bash
+./configure LDFLAGS="-L/usr/local/lib" CPPFLAGS="-I/usr/local/include"
+```
+
+### Threading Support Error
+
+When building maintenance tools, if you encounter "mbedtls not compiled with threading support":
+
+1. Rebuild mbedtls with threading enabled
+2. Ensure `MBEDTLS_THREADING_C` is defined in mbedtls config
+
+See ~/workspace/source/configure.ac:129-139 for the threading check.
+
+### Missing Build Tools
+
+If configure reports missing `xxd` or `sed`:
+
+```bash
+# On Debian/Ubuntu
+sudo apt-get install vim-common sed
+
+# On RHEL/CentOS
+sudo yum install vim-common sed
+```
+
+## Next Steps
+
+- Review [Configuration Options](/build/configuration) for build customization
+- See [Cross-Compilation](/build/cross-compilation) for building multi-architecture releases

@@ -1,0 +1,252 @@
+---
+title: Memory Management
+description: Memory allocation patterns and framework functions in Proone
+---
+
+## Overview
+
+Proone implements custom memory allocation functions (prefixed with `prne_`) to ensure consistent behavior across platforms and facilitate future debugging capabilities. All memory allocated using framework functions must be freed with `prne_free()`.
+
+## Zero-Length Allocation Policy
+
+POSIX-compliant memory functions have inconsistent behavior for zero-length allocations - they may return either a valid pointer or NULL. Proone does not tolerate this inconsistency as it must handle memory allocation failures gracefully.
+
+### The Problem
+
+Consider this problematic code:
+
+```c
+int *get_int_arr(size_t n) {
+  int *ret = (int*)calloc(sizeof(int), n);
+  
+  if (ret == NULL) {
+    abort();
+  }
+  
+  for (size_t i = 0; i < n; i += 1) {
+    ret[i] = i % INT_MAX;
+  }
+  
+  return ret;
+}
+```
+
+The behavior of this code depends on whether `calloc()` returns NULL or a valid pointer for zero-length allocation.
+
+### The Solution
+
+Proone framework allocation functions **always return NULL** for zero-length allocation. This forces implementations to properly check both the parameter and return value:
+
+```c
+if (n > 0 && ret == NULL) {
+  // Handle allocation failure
+}
+```
+
+## Core Allocation Functions
+
+### prne_malloc()
+
+Safe `malloc()` with overflow checking and consistent zero-length behavior.
+
+```c
+void *prne_malloc(const size_t se, const size_t cnt);
+```
+
+**Parameters:**
+- `se` - Size of each element
+- `cnt` - Number of elements
+
+**Returns:**
+- `NULL` if calculated size is zero (errno untouched)
+- `NULL` on allocation failure or integer overflow (errno = ENOMEM)
+- Pointer to allocated memory on success
+
+**Implementation:** (util_rt.c:86-103)
+
+```c
+void *prne_malloc(const size_t se, const size_t cnt) {
+  size_t size;
+  
+  if (se == 0) {
+    return NULL;
+  }
+  if (SIZE_MAX / se < cnt) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  
+  size = cnt * se;
+  if (size == 0) {
+    return NULL;
+  }
+  
+  return malloc(size);
+}
+```
+
+### prne_realloc()
+
+Reallocate memory with consistent zero-length behavior.
+
+```c
+void *prne_realloc(void *ptr, const size_t se, const size_t cnt);
+```
+
+**Parameters:**
+- `ptr` - Pointer to previously allocated memory
+- `se` - Size of each element
+- `cnt` - Number of elements
+
+**Returns:**
+- `NULL` if calculated size is zero (frees ptr, errno untouched)
+- `NULL` on allocation failure or integer overflow (errno = ENOMEM)
+- Pointer to reallocated memory on success
+
+**Note:** Unlike standard `realloc()`, calling with zero size has the same effect as `free()`.
+
+**Implementation:** (util_rt.c:105-124)
+
+```c
+void *prne_realloc(void *ptr, const size_t se, const size_t cnt) {
+  size_t size;
+  
+  if (se == 0) {
+    prne_free(ptr);
+    return NULL;
+  }
+  if (SIZE_MAX / se < cnt) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  
+  size = cnt * se;
+  if (size == 0) {
+    prne_free(ptr);
+    return NULL;
+  }
+  
+  return realloc(ptr, size);
+}
+```
+
+### prne_calloc()
+
+Allocate zeroed memory with consistent behavior.
+
+```c
+void *prne_calloc(const size_t se, const size_t cnt);
+```
+
+**Parameters:**
+- `se` - Size of each element
+- `cnt` - Number of elements
+
+**Returns:**
+- `NULL` if either parameter is zero (errno untouched)
+- `NULL` on allocation failure (errno = ENOMEM)
+- Pointer to zeroed memory on success
+
+**Implementation:** (util_rt.c:126-132)
+
+```c
+void *prne_calloc(const size_t se, const size_t cnt) {
+  if (se == 0 || cnt == 0) {
+    return NULL;
+  }
+  
+  return calloc(se, cnt);
+}
+```
+
+### prne_free()
+
+Free memory allocated by framework functions.
+
+```c
+void prne_free(void *ptr);
+```
+
+**Purpose:**
+- Provides a hook for future resource debugging (similar to MSVC macros)
+- Maintains consistency with framework allocation functions
+- Currently wraps standard `free()` but allows for future enhancements
+
+**Implementation:** (util_rt.c:167-169)
+
+```c
+void prne_free(void *ptr) {
+  free(ptr);
+}
+```
+
+## String Allocation Functions
+
+Convenience functions for string memory management:
+
+### prne_alloc_str()
+
+```c
+char *prne_alloc_str(const size_t len);
+```
+
+Allocates `len + 1` bytes for a string (includes null terminator).
+
+### prne_realloc_str()
+
+```c
+char *prne_realloc_str(char *old, const size_t len);
+```
+
+Reallocates string memory. Unlike `prne_realloc()`, zero length does **not** free memory (allocates 1 byte for null terminator).
+
+### prne_dup_str() / prne_redup_str()
+
+```c
+char *prne_dup_str(const char *str);
+char *prne_redup_str(char *old, const char *str);
+```
+
+Duplicate strings with automatic length calculation.
+
+### prne_sfree_str()
+
+```c
+void prne_sfree_str(char *s);
+```
+
+Scrub and free strings containing sensitive data.
+
+**Implementation:** (util_rt.c:162-165)
+
+```c
+void prne_sfree_str(char *s) {
+  prne_strzero(s);
+  prne_free(s);
+}
+```
+
+## Design Rationale
+
+The framework allocation functions serve three purposes:
+
+1. **Consistent zero-length behavior** - Always return NULL for zero-length allocations across all platforms
+2. **Overflow protection** - Built-in integer overflow checks (especially important for 16-bit machines)
+3. **Future debugging support** - Provides hooks for implementing memory allocation event systems when Valgrind becomes too cumbersome
+
+## Resource Allocation Hook
+
+Both `prne_free()` and `prne_close()` are designed to facilitate framework-level resource debugging in the future. This may be useful when Valgrind becomes too cumbersome. Additionally, these hooks can maintain a registry of file descriptors for use in `prefork()` and `atfork()` equivalents.
+
+## Best Practices
+
+1. **Always use framework functions** - Use `prne_malloc()`, `prne_calloc()`, `prne_realloc()` instead of standard C functions
+2. **Check both conditions** - When checking allocation success: `if (n > 0 && ret == NULL)`
+3. **Match allocation/deallocation** - Memory allocated with `prne_*()` must be freed with `prne_free()`
+4. **Use string helpers** - Prefer `prne_alloc_str()` over manual `malloc(strlen(str)+1)`
+5. **Secure sensitive data** - Use `prne_sfree_str()` for strings containing credentials or keys
+
+## See Also
+
+- [Resource Allocation](/development/resource-allocation) - Transparent structures, opaque types, and ownership patterns
+- [Developer Notes](/development/notes) - Additional implementation notes and debugging tips

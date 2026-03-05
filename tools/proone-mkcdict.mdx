@@ -1,0 +1,223 @@
+---
+title: proone-mkcdict
+description: Credential dictionary build tool
+---
+
+# proone-mkcdict
+
+Tool for building binary credential dictionaries from text files.
+
+## Overview
+
+proone-mkcdict compiles text-based credential lists into an optimized binary format used by the BNE worker for brute-force attacks.
+
+## Usage
+
+```bash
+proone-mkcdict <cred file> <out file>
+```
+
+### Arguments
+
+- `<cred file>`: Path to text file with credentials (use `-` for stdin)
+- `<out file>`: Path to output binary file (use `-` for stdout)
+
+## Input Format
+
+Each line in the credential file follows:
+
+```
+<WEIGHT> <ID> [PW]
+```
+
+Where:
+- `<WEIGHT>`: uint8_t value (0-255) indicating priority
+- `<ID>`: Username (case-sensitive)
+- `[PW]`: Password (case-sensitive, optional)
+
+### Format Notes
+
+- Lines starting with `#` are comments (ignored)
+- Empty lines are ignored
+- Whitespace between fields can be tabs or spaces
+- Usernames and passwords are case-sensitive
+- Higher weight values indicate higher priority
+
+## Example Input File
+
+```
+# TP-Link default credentials
+16	admin	admin
+
+# Linux machine with empty root password
+128	root
+
+# Another typical default credential
+32	root	1234
+
+# Common IoT credentials
+64	admin	
+16	admin	password
+32	user	user
+8	guest	guest
+
+# Telnet defaults
+16	root	root
+16	default	default
+```
+
+## Weight System
+
+Weights determine credential priority:
+
+- **128-255**: Critical/most common credentials
+- **64-127**: High priority credentials
+- **32-63**: Medium priority credentials
+- **16-31**: Low priority credentials
+- **1-15**: Rare/specific credentials
+
+The BNE worker may use weights to prioritize attempts.
+
+## Output Format
+
+The tool generates a binary format:
+
+1. Serialized credential entries
+2. Optimized for fast loading
+3. Includes weight metadata
+4. Null-terminated strings
+
+### Binary Structure
+
+Internal format (implementation detail):
+- Entry count
+- Weight values
+- String offset table
+- String data pool
+
+## Validation
+
+After building, the tool:
+
+1. Deserializes the binary
+2. Verifies all entries are correct
+3. Reports errors if validation fails
+
+## Debug Output
+
+With debug builds (`PRNE_DEBUG=1` and `PRNE_VERBOSE>=3`):
+
+```
+<weight>\t<id>\t<password>
+```
+
+Example:
+```
+16	admin	admin
+128	root	
+32	root	1234
+```
+
+## Terminal Safety
+
+The tool refuses to write binary output to a terminal:
+
+```
+Refusing to write on terminal.
+```
+
+Use file output or pipe to another program.
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success |
+| 1 | Runtime error (I/O, parsing, validation) |
+| 2 | Invalid arguments |
+
+## Error Messages
+
+### Parse Errors
+
+```
+*** Invalid entry at line <N>: <LINE>
+```
+
+Common causes:
+- Invalid weight value (not 0-255)
+- Missing username
+- Malformed line
+
+### Validation Errors
+
+```
+prne_dser_cred_dict(): <error>
+```
+
+Indicates corrupted binary output.
+
+## Example Usage
+
+```bash
+# Create credential dictionary
+proone-mkcdict credentials.txt cred_dict.bin
+
+# From stdin to stdout
+cat credentials.txt | proone-mkcdict - - > cred_dict.bin
+
+# With common IoT credentials
+cat <<EOF | proone-mkcdict - cred_dict.bin
+# Default credentials
+128	root
+64	admin	admin
+32	root	root
+16	user	user
+EOF
+```
+
+## Integration
+
+The output binary is used by:
+
+1. **proone-bne**: Direct testing tool
+2. **proone-mkdvault**: Embedded in DVault
+3. **proone**: Runtime credential dictionary
+
+## Best Practices
+
+### Weight Assignment
+
+- Use 128+ for known common credentials
+- Use 64-127 for manufacturer defaults
+- Use 32-63 for common patterns
+- Use 16-31 for less common credentials
+- Use 1-15 for specific/targeted credentials
+
+### Credential Collection
+
+- Include manufacturer defaults
+- Add common patterns (admin/admin, root/root)
+- Consider empty passwords
+- Include username-as-password combinations
+- Research specific device types
+
+### File Organization
+
+- Group by device type or manufacturer
+- Comment credential sources
+- Keep weights consistent within groups
+- Document rationale for unusual credentials
+
+## Security Considerations
+
+- Store credential files securely
+- Limit access to binary dictionaries
+- Rotate dictionaries periodically
+- Monitor effectiveness and update
+
+## Source
+
+Location: `src/proone-mkcdict.c`
+
+Sample file: `src/data/cred_dict.sample.txt`

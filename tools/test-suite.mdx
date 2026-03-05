@@ -1,0 +1,203 @@
+---
+title: Test Suite
+description: Proone test executables and utilities
+---
+
+# Test Suite
+
+Proone includes several test executables for validating core functionality.
+
+## Test Executables
+
+According to the documentation (`doc/sws.md`), the following test executables are available:
+
+### proone-test_bitfield
+
+Test suite for variable-length bitfield operations.
+
+**Source**: `src/proone-test_bitfield.c`
+
+**Purpose**: Validates the bitfield data structure used for instance flags and other bit-level operations.
+
+**Usage**:
+```bash
+proone-test_bitfield
+```
+
+### proone-test_iobuf
+
+Test suite for byte vector input/output buffer.
+
+**Source**: `src/proone-test_iobuf.c`
+
+**Purpose**: Tests the I/O buffer implementation used throughout Proone for network operations.
+
+**Usage**:
+```bash
+proone-test_iobuf
+```
+
+### proone-test_proto
+
+Project protocol test suite.
+
+**Source**: `src/proone-test_proto.c`
+
+**Purpose**: Validates the Heartbeat protocol serialization and deserialization.
+
+**Usage**:
+```bash
+proone-test_proto
+```
+
+### proone-test_util
+
+Test suite for utility functions.
+
+**Source**: `src/proone-test_util.c`
+
+**Purpose**: Tests various utility functions used across the codebase.
+
+**Usage**:
+```bash
+proone-test_util
+```
+
+## Additional Test Tools
+
+### test-resolv.sh
+
+Shell script for testing the Resolv worker.
+
+**Source**: `src/test-resolv.sh`
+
+**Purpose**: Integration testing for the DNS resolver functionality.
+
+## Utility Tools
+
+Additional tools for testing and debugging:
+
+### proone-rnd
+
+Uniform pseudorandom number generator testing tool.
+
+**Source**: `src/proone-rnd.c`
+
+**Purpose**: Tests the WELL512 PRNG implementation.
+
+**Usage**:
+```bash
+proone-rnd
+```
+
+Validates:
+- Random number distribution
+- Generator state consistency
+- Seed handling
+
+### proone-stress
+
+CPU stress testing tool (no FPU usage).
+
+**Source**: `src/proone-stress.c`
+
+**Purpose**: Stress tests CPU without using floating-point operations, useful for embedded systems testing.
+
+**Usage**:
+```bash
+proone-stress
+```
+
+### proone-ipaddr-arr
+
+Tool for converting IP address strings to C arrays.
+
+**Source**: `src/proone-ipaddr-arr.c`
+
+**Purpose**: Generates C array initializers from IP address strings for configuration.
+
+**Usage**:
+```bash
+proone-ipaddr-arr
+```
+
+### proone-htbthost
+
+Standalone heartbeat worker for testing.
+
+**Source**: `src/proone-htbthost.c`
+
+**Purpose**: Runs the Heartbeat worker in standalone mode for protocol testing.
+
+## Test Data Files
+
+### Configuration Samples
+
+- `src/data/cred_dict.sample.txt`: Sample credential dictionary
+- `src/data/hostinfod.conf.sample`: Sample hostinfod configuration
+- `src/data/recon.sample.conf`: Sample recon configuration
+
+## Running Tests
+
+Tests are typically run as part of the build process:
+
+```bash
+# Run all tests
+./src/run-tests.sh
+
+# Run individual test
+./src/proone-test_bitfield
+./src/proone-test_iobuf
+./src/proone-test_proto
+./src/proone-test_util
+```
+
+## Exit Codes
+
+All test executables follow standard conventions:
+
+| Code | Description |
+|------|-------------|
+| 0 | All tests passed |
+| Non-zero | Test failure |
+
+## Test Coverage
+
+The test suite covers:
+
+- **Data Structures**: Bitfield, I/O buffers, linked lists, maps
+- **Protocol**: Serialization, deserialization, message handling
+- **Utilities**: String operations, memory operations, UUID handling
+- **Workers**: Resolv worker DNS operations
+- **Random**: PRNG correctness and distribution
+
+## Debugging
+
+Tests can be run with debug output:
+
+```bash
+# Compile with debug enabled
+PRNE_DEBUG=1 PRNE_VERBOSE=5 make
+
+# Run with verbose output
+./src/proone-test_proto
+```
+
+## Integration Testing
+
+For integration testing:
+
+1. Use standalone workers (`proone-recon`, `proone-resolv`)
+2. Test BNE functionality with `proone-bne`
+3. Test Heartbeat with `proone-htbtclient` and `proone-hostinfod`
+4. Validate binary packaging with `proone-pack`
+
+## Build Location
+
+Test executables are built in:
+- Debug symbols: `/builds/debug/`
+- Test binaries: `/builds/misc/` (for target architectures)
+
+## Source References
+
+All test sources are located in `/src/` with the prefix `proone-test_` or included in the test scripts directory.

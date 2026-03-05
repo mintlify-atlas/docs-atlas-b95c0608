@@ -1,0 +1,486 @@
+---
+title: 'Resolv Subsystem'
+description: 'DNS-over-TLS resolver for CNC TXT records and name resolution'
+---
+
+The **Resolv** worker is a specialized DNS resolver designed specifically for Proone. It's primarily used for TXT record CNC and supports only the basics needed for operation.
+
+## Overview
+
+The Resolv worker provides:
+
+- **DNS-over-TLS (DoT)** queries to public resolvers
+- **TXT record** resolution for CNC commands
+- **A/AAAA record** resolution for connectivity
+- **Promise-future** model for async queries
+- **Connection pooling** with automatic failover
+
+## Architecture
+
+```c src/resolv.c
+struct prne_resolv {
+    struct pollfd act_sck_pfd;
+    size_t ptr_nspool4, ptr_nspool6;
+    prne_resolv_ns_pool_t nspool4, nspool6;
+    pth_mutex_t lock;
+    pth_cond_t cond;
+    prne_iobuf_t iobuf[2];
+    uint8_t m_buf[2][514];  // DNS message buffers
+    prne_llist_t qlist;     // Query queue
+    prne_imap_t qid_map;    // Query ID map
+    struct {
+        mbedtls_ssl_config conf;
+        mbedtls_ssl_context ctx;
+        mbedtls_ctr_drbg_context *ctr_drbg;
+    } ssl;
+};
+```
+
+## Default Name Servers
+
+The worker uses hardcoded public DoT servers:
+
+### IPv4 Pool
+
+```c src/resolv.c
+static prne_net_endpoint_t RESOLV_DEF_IPV4_EP_ARR[] = {
+    { { { PRNE_RESOLV_NS_IPV4_GOOGLE_A }, PRNE_IPV_4, 0 }, 853 },       // 8.8.8.8
+    { { { PRNE_RESOLV_NS_IPV4_GOOGLE_B }, PRNE_IPV_4, 0 }, 853 },       // 8.8.4.4
+    { { { PRNE_RESOLV_NS_IPV4_CLOUDFLARE_A }, PRNE_IPV_4, 0 }, 853 },   // 1.1.1.1
+    { { { PRNE_RESOLV_NS_IPV4_CLOUDFLARE_B }, PRNE_IPV_4, 0 }, 853 },   // 1.0.0.1
+    { { { PRNE_RESOLV_NS_IPV4_QUAD9_A }, PRNE_IPV_4, 0 }, 853 },        // 9.9.9.9
+    { { { PRNE_RESOLV_NS_IPV4_QUAD9_B }, PRNE_IPV_4, 0 }, 853 },        // 149.112.112.112
+    { { { PRNE_RESOLV_NS_IPV4_CLEANBROWSING_A }, PRNE_IPV_4, 0 }, 853 },
+    { { { PRNE_RESOLV_NS_IPV4_CLEANBROWSING_B }, PRNE_IPV_4, 0 }, 853 }
+};
+```
+
+### IPv6 Pool
+
+```c src/resolv.c
+static prne_net_endpoint_t RESOLV_DEF_IPV6_EP_ARR[] = {
+    { { { PRNE_RESOLV_NS_IPV6_GOOGLE_A }, PRNE_IPV_6, 0 }, 853 },
+    { { { PRNE_RESOLV_NS_IPV6_GOOGLE_B }, PRNE_IPV_6, 0 }, 853 },
+    { { { PRNE_RESOLV_NS_IPV6_CLOUDFLARE_A }, PRNE_IPV_6, 0 }, 853 },
+    { { { PRNE_RESOLV_NS_IPV6_CLOUDFLARE_B }, PRNE_IPV_6, 0 }, 853 },
+    // ...
+};
+```
+
+<Info>
+Only **hardcoded public DoT servers** are used. The worker does not depend on system DNS configuration.
+</Info>
+
+## Query Model
+
+Queries use a promise-future pattern:
+
+```c src/resolv.c
+typedef struct {
+    prne_resolv_t *owner;
+    prne_llist_entry_t *qlist_ent;
+    char *qname;
+    prne_pth_cv_t *cv;          // Condition variable
+    uint_fast16_t qid;          // Query ID (0 = not sent)
+    prne_resolv_fut_t fut;      // Future result
+    prne_ipv_t ipv;
+    prne_resolv_query_type_t type;
+    struct timespec tp_queued;
+} query_entry_t;
+```
+
+### Query Submission
+
+```c src/resolv.c
+static bool resolv_qq(
+    prne_resolv_t *ctx,
+    const char *name,
+    prne_pth_cv_t *cv,
+    prne_resolv_prm_t *out,
+    query_entry_t **ny_q_ent)
+{
+    // Create query entry
+    q_ent = prne_malloc(sizeof(query_entry_t), 1);
+    
+    // Convert name to DNS format
+    resolv_gen_qname(name, &q_ent->qname, &q_ent->qname_size);
+    
+    // Add to queue
+    prne_dbgtrap(pth_mutex_acquire(&ctx->lock, FALSE, NULL));
+    q_ent->qlist_ent = prne_llist_append(&ctx->qlist, q_ent);
+    q_ent->tp_queued = prne_gettime(CLOCK_MONOTONIC);
+    prne_dbgtrap(pth_cond_notify(&ctx->cond, FALSE));
+    pth_mutex_release(&ctx->lock);
+    
+    // Return promise
+    out->ctx = q_ent;
+    out->fut = &q_ent->fut;
+    return true;
+}
+```
+
+## Connection Management
+
+### Dual-Stack Connection
+
+```c src/resolv.c
+static bool resolv_ensure_act_dns_fd(prne_resolv_t *ctx) {
+    struct pollfd pfs[2];
+    struct sockaddr_in6 sa6;
+    struct sockaddr_in sa4;
+    
+    // Try both IPv6 and IPv4 simultaneously
+    for (i = 0; i < 2; i += 1) {
+        pfs[i].fd = socket(ARR_DOMAIN[i], SOCK_STREAM, 0);
+        pfs[i].events = POLLOUT;
+        
+        prne_sck_fcntl(pfs[i].fd);
+        connect(pfs[i].fd, arr_sa[i], ARR_SL[i]);
+    }
+    
+    // Wait for first connection to complete
+    while (pfs[0].fd >= 0 || pfs[1].fd >= 0) {
+        pollret = prne_pth_poll(pfs, 2, -1, ev);
+        
+        // Use first successful connection
+        for (i = 0; i < 2; i += 1) {
+            if (pfs[i].revents & POLLOUT) {
+                if (connection_successful(pfs[i].fd)) {
+                    ctx->act_sck_pfd.fd = pfs[i].fd;
+                    return true;
+                }
+            }
+        }
+    }
+}
+```
+
+### TLS Handshake
+
+```c src/resolv.c
+static bool resolv_ensure_conn(prne_resolv_t *ctx) {
+    if (ctx->act_sck_pfd.fd < 0) {
+        // Create socket
+        if (!resolv_ensure_act_dns_fd(ctx)) {
+            return false;
+        }
+        
+        // Perform TLS handshake
+        if (!prne_mbedtls_pth_handle(
+            &ctx->ssl.ctx,
+            mbedtls_ssl_handshake,
+            ctx->act_sck_pfd.fd,
+            ev,
+            NULL))
+        {
+            // Retry after pause
+            goto END;
+        }
+    }
+    return true;
+}
+```
+
+## Message Processing
+
+### DNS Message Format
+
+```
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ |                    Length                     |  // 2 bytes (DoT)
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ |                      ID                       |  // 2 bytes
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ |                   QDCOUNT                     |
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ |                   ANCOUNT                     |
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ |                   NSCOUNT                     |
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ |                   ARCOUNT                     |
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ |                   Questions                   |
+ |                   Answers                     |
+ |                   Authority                   |
+ |                   Additional                  |
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+```
+
+### Query Generation
+
+```c src/resolv.c
+static void resolv_write_dns_msg(query_entry_t *qent, uint8_t *mem) {
+    // ID
+    mem[0] = (uint8_t)((qent->qid & 0xFF00) >> 8);
+    mem[1] = (uint8_t)(qent->qid & 0x00FF);
+    
+    // Flags: QR=0, Opcode=0, RD=1
+    mem[2] = 0x01;
+    mem[3] = 0x00;
+    
+    // QDCOUNT=1, others=0
+    mem[4] = 0x00;
+    mem[5] = 0x01;
+    mem[6] = mem[7] = mem[8] = mem[9] = mem[10] = mem[11] = 0x00;
+    
+    // QNAME
+    memcpy(mem + 12, qent->qname, qent->qname_size);
+    
+    // QTYPE
+    switch (qent->type) {
+    case PRNE_RESOLV_QT_A:
+        mem[qent->qname_size + 12] = 0x00;
+        mem[qent->qname_size + 13] = 0x01;
+        break;
+    case PRNE_RESOLV_QT_AAAA:
+        mem[qent->qname_size + 12] = 0x00;
+        mem[qent->qname_size + 13] = 0x1C;
+        break;
+    case PRNE_RESOLV_QT_TXT:
+        mem[qent->qname_size + 12] = 0x00;
+        mem[qent->qname_size + 13] = 0x10;
+        break;
+    }
+    
+    // QCLASS=IN
+    mem[qent->qname_size + 14] = 0x00;
+    mem[qent->qname_size + 15] = 0x01;
+}
+```
+
+## Label Compression
+
+DNS uses label compression with pointers:
+
+```c src/resolv.c
+static const uint8_t* resolv_index_labels(
+    prne_imap_t *map,
+    const uint8_t *start,
+    const uint8_t *end,
+    const uint8_t *p,
+    prne_resolv_qr_t *qr,
+    int *err)
+{
+    while (*p != 0 && p < end) {
+        if ((p[0] & 0xC0) == 0xC0) {
+            // Pointer: bits 11xxxxxx xxxxxxxx
+            ptr = ((uint16_t)p[0] << 8) | (uint16_t)p[1];
+            return p + 2;
+        }
+        else if (*p > 63) {
+            // Invalid label length
+            *qr = PRNE_RESOLV_QR_PRO_ERR;
+            return NULL;
+        }
+        else {
+            // Regular label: index it
+            ptr = (uint16_t)(p - start) | 0xC000;
+            prne_imap_insert(map, ptr, (prne_imap_val_type_t)p);
+            p += *p + 1;
+        }
+    }
+    return p + 1;
+}
+```
+
+## CNAME Resolution
+
+```c src/resolv.c
+static bool resolv_proc_dns_msg(...) {
+    // Start with query name
+    alias = qname;
+    prne_iset_insert(&alias_set, (prne_iset_val_t)alias);
+    
+QNAME_START:
+    // Find CNAME records
+    for (cur = rr_list.head; cur != NULL; cur = cur->next) {
+        tpl = (rr_tuple_t*)cur->element;
+        
+        if (tpl->rtype == PRNE_RESOLV_RTYPE_CNAME) {
+            cmp_ret = resolv_mapped_qname_cmp(&ptr_map, tpl->name, alias, &qr);
+            if (cmp_ret) {
+                // Check for loops
+                if (prne_iset_lookup(&alias_set, (prne_iset_val_t)tpl->data)) {
+                    qr = PRNE_RESOLV_QR_PRO_ERR;
+                    goto END;
+                }
+                // Follow chain
+                alias = tpl->data;
+                goto QNAME_START;
+            }
+        }
+    }
+    
+    // Collect records matching final alias
+    // ...
+}
+```
+
+## Pipelining
+
+```c src/resolv.c
+static const size_t RESOLV_PIPELINE_SIZE = 4;
+
+static bool resolv_send_dns_msgs(prne_resolv_t *ctx) {
+    // Send up to 4 queries without waiting for responses
+    while (cur != NULL && ctx->qid_map.size < RESOLV_PIPELINE_SIZE) {
+        qent = (query_entry_t*)cur->element;
+        
+        // Generate unique query ID
+        qid = resolv_next_qid(ctx);
+        
+        // Add to pipeline
+        prne_imap_insert(&ctx->qid_map, qid, (prne_imap_val_type_t)qent);
+        
+        // Write query to output buffer
+        resolv_write_dns_msg(qent, ctx->iobuf[1].m + ctx->iobuf[1].len);
+        prne_iobuf_shift(ctx->iobuf + 1, dot_msg_len);
+    }
+    
+    return ctx->qid_map.size > 0;
+}
+```
+
+## Connection Persistence
+
+```c src/resolv.c
+static const struct timespec RESOLV_SCK_IDLE_TIMEOUT = { 15, 0 };  // 15s
+
+static void *resolv_wkr_entry(void *p) {
+    while (ctx->ctx_state == RESOLV_CTX_STATE_OK) {
+        prne_dbgtrap(pth_mutex_acquire(&ctx->lock, FALSE, NULL));
+        
+        if (ctx->qlist.size == 0) {
+            if (ctx->act_sck_pfd.fd >= 0) {
+                // Wait with timeout
+                ev = pth_event(PTH_EVENT_TIME, 
+                    pth_timeout(RESOLV_SCK_IDLE_TIMEOUT.tv_sec, 0));
+                pth_cond_await(&ctx->cond, &ctx->lock, ev);
+                
+                // Close idle connection
+                if (pth_event_status(ev) != PTH_STATUS_PENDING) {
+                    resolv_proc_close(ctx);
+                }
+            }
+        }
+        pth_mutex_release(&ctx->lock);
+        
+        resolv_proc_q(ctx);
+    }
+}
+```
+
+<Info>
+Connections remain open for **15 seconds** after the last query completes. This allows efficient processing of TXT record streams.
+</Info>
+
+## Failover Mechanism
+
+```c src/resolv.c
+static void resolv_close_sck(
+    prne_resolv_t *ctx,
+    const struct timespec *pause,
+    bool change_srvr)
+{
+    // Move pipeline queries back to queue
+    for (i = 0; i < ctx->qid_map.size; i += 1) {
+        qent = (query_entry_t*)ctx->qid_map.tbl[i].val;
+        lent = prne_llist_append(&ctx->qlist, (prne_llist_element_t)qent);
+        qent->qid = 0;
+        qent->qlist_ent = lent;
+    }
+    prne_imap_clear(&ctx->qid_map);
+    
+    // Close connection
+    prne_shutdown(ctx->act_sck_pfd.fd, SHUT_RDWR);
+    prne_close(ctx->act_sck_pfd.fd);
+    ctx->act_sck_pfd.fd = -1;
+    
+    // Select different server on error
+    if (change_srvr) {
+        ctx->ptr_nspool4 = resolv_next_pool_ptr(ctx, ctx->nspool4.cnt);
+        ctx->ptr_nspool6 = resolv_next_pool_ptr(ctx, ctx->nspool6.cnt);
+    }
+}
+```
+
+## Timeouts
+
+```c src/resolv.c
+static const struct timespec RESOLV_QUERY_TIMEOUT = { 60, 0 };      // 60s
+static const struct timespec RESOLV_SCK_OP_TIMEOUT = { 10, 0 };     // 10s
+static const struct timespec RESOLV_CONN_ERR_PAUSE = { 0, 100 };    // 100ms
+static const struct timespec RESOLV_RSRC_ERR_PAUSE = { 1, 0 };      // 1s
+```
+
+## Response Codes
+
+| QR Code | Description |
+|---------|-------------|
+| `PRNE_RESOLV_QR_OK` | Query successful |
+| `PRNE_RESOLV_QR_ERR` | System error (check `err`) |
+| `PRNE_RESOLV_QR_PRO_ERR` | Protocol error |
+| `PRNE_RESOLV_QR_TIMEOUT` | Query timeout |
+| `PRNE_RESOLV_QR_STATUS` | DNS error (check `status`) |
+| `PRNE_RESOLV_QR_IMPL` | Not implemented (e.g., TC bit) |
+
+## Usage Example
+
+```c
+prne_resolv_t *resolv;
+prne_resolv_prm_t prm;
+prne_pth_cv_t cv;
+
+// Initialize
+resolv = prne_alloc_resolv(
+    &wkr,
+    ctr_drbg,
+    PRNE_RESOLV_DEF_IPV4_POOL,
+    PRNE_RESOLV_DEF_IPV6_POOL);
+
+// Queue query
+prne_init_resolv_prm(&prm);
+prne_resolv_prm_gettxtrec(
+    resolv,
+    "cnc.example.com",
+    &cv,
+    &prm);
+
+// Wait for result
+prne_pth_cv_wait(&cv);
+
+if (prm.fut->qr == PRNE_RESOLV_QR_OK) {
+    // Process results
+    for (size_t i = 0; i < prm.fut->rr_cnt; i++) {
+        process_txt_record(prm.fut->rr[i].rd_data, prm.fut->rr[i].rd_len);
+    }
+}
+
+// Cleanup
+prne_resolv_free_prm(&prm);
+```
+
+## Limitations
+
+<Warning>
+- **No DNSSEC validation**
+- **No EDNS support**
+- **Truncated responses (TC bit) not handled**
+- **Maximum message size: 512 bytes**
+- **No system resolver integration**
+</Warning>
+
+## Related Components
+
+- [Heartbeat CNCP](/subsystems/heartbeat) - Uses Resolv for TXT records
+- [Network Utilities](/api/network) - Address parsing and formatting
+- [MbedTLS Integration](/api/mbedtls) - TLS connection handling
+
+## References
+
+- Implementation: `src/resolv.c`, `src/resolv.h`
+- Standalone tool: `proone-resolv`
+- Test suite: `src/test-resolv.sh`
+- RFC 1035: Domain Names - Implementation and Specification

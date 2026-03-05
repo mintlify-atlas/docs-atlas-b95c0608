@@ -1,0 +1,253 @@
+---
+title: proone-mkdvault
+description: Data Vault binary build tool
+---
+
+# proone-mkdvault
+
+Tool for building the Data Vault (DVault) binary containing masked configuration and sensitive data.
+
+## Overview
+
+proone-mkdvault compiles various configuration files and data into a single masked binary blob. The DVault is appended to Proone executables and contains all sensitive data needed for operation.
+
+## Usage
+
+```bash
+proone-mkdvault <cred dict> > dvault.bin
+```
+
+### Arguments
+
+- `<cred dict>`: Path to binary credential dictionary (from proone-mkcdict)
+
+Output is written to stdout (redirect to file).
+
+## Data Sources
+
+The tool compiles data from:
+
+### Compile-Time Configuration
+
+- `PRNE_PROG_VER`: Program version UUID
+- `PRNE_SHG_SALT`: Shared global salt value
+- `PRNE_CNC_TXT_REC`: CNC TXT record domain
+- `PRNE_VER_MAT`: Version compatibility matrix
+- `PRNE_BNE_EXEC_NAME`: Executable name for deployment
+- `PRNE_BNE_LOCK_NAME`: Lock file name
+
+### X.509 Certificates (from proone_conf/x509.h)
+
+- `PRNE_X509_CA_CRT`: CA certificate
+- `PRNE_X509_DH`: Diffie-Hellman parameters
+- `PRNE_X509_S_CRT`: Server certificate
+- `PRNE_X509_S_KEY`: Server private key
+- `PRNE_X509_C_CRT`: Client certificate
+- `PRNE_X509_C_KEY`: Client private key
+
+### DNS Configuration (from proone_conf/config.h)
+
+- `PRNE_RESOLV_NS_POOL_IPV4`: IPv4 DoT server addresses
+- `PRNE_RESOLV_NS_POOL_IPV6`: IPv6 DoT server addresses
+
+### Recon Configuration (from proone_conf/config.h)
+
+- `PRNE_RCN_PORTS`: Target port list
+- `PRNE_RCN_T_IPV4`: IPv4 target networks
+- `PRNE_RCN_BL_IPV4`: IPv4 blacklist networks
+- `PRNE_RCN_T_IPV6`: IPv6 target networks
+- `PRNE_RCN_BL_IPV6`: IPv6 blacklist networks
+
+### External Files
+
+- Credential dictionary (command-line argument)
+
+## DVault Format
+
+```
++------------------------+
+| Mask (256 bytes)       |
+| - Random permutation   |
++------------------------+
+| Offsets (N*2 bytes)    |
+| - Per-key offsets      |
+| - Masked               |
++------------------------+
+| Data entries           |
+| - Variable size        |
+| - Masked               |
++------------------------+
+```
+
+## Masking Process
+
+### Mask Generation
+
+1. Generate 256 random bytes using mbedtls entropy
+2. Create random permutation (0-255)
+3. Store in DVault header
+
+### Data Masking
+
+For each data entry:
+
+1. Generate random salt byte
+2. XOR data with salt
+3. Apply mask permutation
+4. Store masked result
+
+### Types of Data
+
+- **Binary (PRNE_DATA_TYPE_BIN)**: Raw binary data
+- **C String (PRNE_DATA_TYPE_CSTR)**: Null-terminated strings
+
+Each type is masked differently to preserve structure.
+
+## Data Keys
+
+DVault entries are accessed by key:
+
+- `PRNE_DATA_KEY_PROG_VER`: Program version
+- `PRNE_DATA_KEY_SHG_SALT`: Shared global salt
+- `PRNE_DATA_KEY_X509_CA_CRT`: CA certificate
+- `PRNE_DATA_KEY_X509_DH`: DH parameters
+- `PRNE_DATA_KEY_X509_S_CRT`: Server certificate
+- `PRNE_DATA_KEY_X509_S_KEY`: Server key
+- `PRNE_DATA_KEY_X509_C_CRT`: Client certificate
+- `PRNE_DATA_KEY_X509_C_KEY`: Client key
+- `PRNE_DATA_KEY_RESOLV_NS_IPV4`: IPv4 DNS servers
+- `PRNE_DATA_KEY_RESOLV_NS_IPV6`: IPv6 DNS servers
+- `PRNE_DATA_KEY_CNC_TXT_REC`: CNC domain
+- `PRNE_DATA_KEY_RCN_PORTS`: Recon ports
+- `PRNE_DATA_KEY_RCN_T_IPV4`: IPv4 targets
+- `PRNE_DATA_KEY_RCN_BL_IPV4`: IPv4 blacklist
+- `PRNE_DATA_KEY_RCN_T_IPV6`: IPv6 targets
+- `PRNE_DATA_KEY_RCN_BL_IPV6`: IPv6 blacklist
+- `PRNE_DATA_KEY_CRED_DICT`: Credentials
+- `PRNE_DATA_KEY_EXEC_NAME`: Executable name
+- `PRNE_DATA_KEY_VER_MAT`: Version matrix
+- `PRNE_DATA_KEY_BNE_LOCK_NAME`: Lock file name
+
+## Size Limits
+
+- Maximum total size: 65,535 bytes (16-bit size field)
+- Individual entry sizes vary by content
+
+## Validation
+
+The tool performs three load/unload cycles:
+
+1. Initialize DVault from binary
+2. Retrieve all entries by key
+3. Verify data matches original
+4. Repeat 3 times
+
+This ensures:
+- Correct masking/unmasking
+- No data corruption
+- Proper offset calculation
+
+## Terminal Safety
+
+```
+Refusing to print on terminal.
+```
+
+Output must be redirected to file or pipe.
+
+## Version Matrix
+
+The `PRNE_VER_MAT` contains UUIDs of compatible versions:
+
+- Sorted in ascending order
+- Used for version comparison
+- Enables compatibility checks
+
+## Security Features
+
+### Data Obfuscation
+
+- XOR masking prevents `strings` analysis
+- Random mask per build
+- Different mask for each entry
+- Salt randomization
+
+### Anti-Analysis
+
+- High entropy prevents compression
+- Difficult to identify data types
+- No clear structure in binary
+- Randomized offsets
+
+## Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success |
+| 1 | Runtime error |
+| 2 | Invalid arguments or validation failure |
+
+## Error Messages
+
+### Null Entry
+
+```
+Null entry found.
+```
+
+A required data key is missing.
+
+### Size Limit
+
+```
+The output size limit reached!
+```
+
+DVault exceeds 65,535 bytes.
+
+### Masking Errors
+
+```
+prne_dvault_mask() <key>: <error>
+```
+
+Masking operation failed for the specified key.
+
+## Example Usage
+
+```bash
+# Generate DVault
+proone-mkdvault cred_dict.bin > dvault.bin
+
+# Verify size
+ls -lh dvault.bin
+
+# Use in binary packaging
+proone-pack output/proone dvault.bin builds/proone.bin/*
+```
+
+## Dependencies
+
+- mbedtls (entropy and CSPRNG)
+- Credential dictionary binary
+- Configuration headers:
+  - `proone_conf/config.h`
+  - `proone_conf/x509.h`
+
+## Integration
+
+DVault is used by:
+
+1. **proone-pack**: Embedded in all executables
+2. **proone**: Loaded at runtime
+3. **proone-bne**: Loaded for testing
+
+The DVault must be regenerated when:
+- Configuration changes
+- Certificates are updated
+- Network targets change
+- Credential dictionary updates
+
+## Source
+
+Location: `src/proone-mkdvault.c`

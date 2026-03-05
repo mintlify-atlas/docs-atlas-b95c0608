@@ -1,0 +1,370 @@
+---
+title: Security Notice
+description: Critical warnings about the malware nature, legal implications, and ethical usage of Proone
+---
+
+<Warning>
+  **READ THIS BEFORE PROCEEDING**: This page contains critical information about legal, ethical, and security concerns. Failure to understand and comply with these warnings may result in serious legal consequences.
+</Warning>
+
+## Critical Warning
+
+<Card title="This Software is Malware" icon="skull" color="#ca2a2a">
+  **PROONE IS MALICIOUS SOFTWARE.** It is designed to scan networks, exploit vulnerabilities, and propagate itself across computer systems without authorization. Using this software on systems you do not own or have explicit permission to test is **ILLEGAL**.
+</Card>
+
+## Message to General Public
+
+The following statement is taken directly from the project README:
+
+> **This software is a malware**. This software has been tested to work in an orchestrated virtual environment. In principle, it works by scanning the Internet and local network for computers with security vulnerabilities. This software is programmed to do something illegal! If you wish to use this software, please do so in a controlled environment safely isolated from the Internet.
+
+<Warning>
+  Proone actively scans networks for vulnerable devices and exploits security weaknesses to gain unauthorized access. This behavior is illegal in virtually all jurisdictions.
+</Warning>
+
+## Legal Implications
+
+### Criminal Offenses
+
+Deploying or operating Proone in an unauthorized manner may constitute multiple criminal offenses:
+
+<AccordionGroup>
+  <Accordion title="Computer Fraud and Abuse Act (CFAA) - United States" icon="gavel">
+    - **18 U.S.C. § 1030**: Accessing computers without authorization
+    - **Penalties**: Up to 10-20 years imprisonment for repeat offenses
+    - **Civil Liability**: Victims can sue for damages
+    
+    Even "testing" on systems you believe to be vulnerable without explicit authorization violates federal law.
+  </Accordion>
+
+  <Accordion title="Computer Misuse Act - United Kingdom" icon="scale-balanced">
+    - **Unauthorized access to computer material**: Up to 2 years imprisonment
+    - **Unauthorized acts with intent to impair**: Up to 10 years imprisonment
+    - **Making, supplying or obtaining articles for use in offense**: Up to 2 years imprisonment
+    
+    Possession of this software with intent to use it unlawfully may itself be criminal.
+  </Accordion>
+
+  <Accordion title="International Laws" icon="globe">
+    Most countries have similar computer crime statutes:
+    - **European Union**: Various cybercrime directives
+    - **Canada**: Criminal Code sections 342.1, 430(1.1)
+    - **Australia**: Criminal Code Act 1995
+    - **Japan**: Unauthorized Computer Access Law
+    
+    Cross-border attacks may result in prosecution in multiple jurisdictions.
+  </Accordion>
+
+  <Accordion title="Creation and Distribution of Malware" icon="virus">
+    In many jurisdictions, creating and distributing malware tools can be illegal even without deploying them:
+    - Aiding and abetting computer crimes
+    - Conspiracy charges if others use the tool
+    - Export control violations for security tools
+  </Accordion>
+</AccordionGroup>
+
+### Civil Liability
+
+Beyond criminal prosecution, unauthorized use can result in:
+
+- **Monetary Damages**: Victims can sue for financial losses
+- **Injunctions**: Court orders prohibiting future activities
+- **Restitution**: Being ordered to pay back costs incurred by victims
+- **Reputation Damage**: Permanent impact on professional career
+
+## Ethical Considerations
+
+### The Hacker's Dilemma
+
+<Note>
+  **Knowledge vs. Action**: Understanding how malware works is essential for defense, but creating and deploying malware crosses ethical boundaries.
+</Note>
+
+This project exists in a gray area:
+
+<CardGroup cols={2}>
+  <Card title="Legitimate Use Cases" icon="check" color="#00a67d">
+    - Security research in isolated environments
+    - Educational purposes in controlled labs
+    - Understanding attack vectors for defense
+    - Academic study of malware architecture
+  </Card>
+  
+  <Card title="Illegitimate Use Cases" icon="xmark" color="#ca2a2a">
+    - Scanning production networks without permission
+    - Deploying on any internet-connected system
+    - Testing on devices you don't own
+    - Building botnets for any purpose
+  </Card>
+</CardGroup>
+
+### The "Greater Good" Fallacy
+
+<Warning>
+  **There is no "vigilante justice" in cybersecurity.** The idea of "pruning bad devices" from the internet, even with good intentions, is:
+  
+  - **Illegal**: Unauthorized access regardless of motive
+  - **Dangerous**: Unintended consequences and collateral damage
+  - **Unethical**: Taking unilateral action against others' property
+  - **Ineffective**: Does not address root causes of IoT vulnerabilities
+</Warning>
+
+The original author explicitly abandoned this concept, recognizing its flaws.
+
+## Technical Risks
+
+### Risks to Your Environment
+
+<AccordionGroup>
+  <Accordion title="Network Scanning" icon="radar">
+    **Risk**: Raw socket operations and aggressive scanning can:
+    - Trigger intrusion detection systems (IDS)
+    - Cause network performance degradation
+    - Alert security teams and law enforcement
+    - Violate terms of service with ISPs
+    
+    **Mitigation**: Only use in completely isolated virtual networks with no internet connectivity.
+  </Accordion>
+
+  <Accordion title="Self-Propagation" icon="diagram-project">
+    **Risk**: Proone is designed to spread autonomously:
+    - May escape isolated environments through misconfigurations
+    - Could propagate to other systems on your network
+    - Difficult to contain once deployed
+    - Creates legal liability for all infected systems
+    
+    **Mitigation**: Use air-gapped virtual environments with snapshots for immediate rollback.
+  </Accordion>
+
+  <Accordion title="Exploit Vectors" icon="user-secret">
+    **Risk**: Active exploitation of vulnerabilities:
+    - SSH brute forcing generates authentication logs
+    - May damage or corrupt target systems
+    - Could exploit zero-day vulnerabilities
+    - Creates forensic evidence of attacks
+    
+    **Mitigation**: Only test against systems you control and have explicitly configured as vulnerable targets.
+  </Accordion>
+
+  <Accordion title="Binary Recombination" icon="dna">
+    **Risk**: Self-modifying and multi-architecture support:
+    - Creates multiple variants difficult to track
+    - May behave unexpectedly on different platforms
+    - Can evade traditional malware signatures
+    - Increases forensic complexity
+    
+    **Mitigation**: Understand the binary recombination process before any testing.
+  </Accordion>
+</AccordionGroup>
+
+## Safe Usage Requirements
+
+<Card title="Mandatory Safety Protocol" icon="shield-check">
+  If you choose to work with this software for legitimate research or educational purposes, you **MUST** follow these requirements:
+</Card>
+
+### Environment Isolation
+
+```bash
+# Example: Isolated Virtual Network Setup
+# Create a completely isolated virtual network
+# NO bridge to host network, NO internet access
+
+# 1. Use hypervisor (VirtualBox, VMware, KVM)
+# 2. Create internal-only network
+# 3. Deploy vulnerable test VMs
+# 4. Monitor all activity
+# 5. Snapshot before running
+# 6. Destroy after testing
+```
+
+<Steps>
+  <Step title="Air-Gapped Environment">
+    Deploy in virtual machines with **no physical or virtual network connection** to production systems or the internet.
+  </Step>
+  
+  <Step title="Documented Authorization">
+    Maintain written documentation of your authorization to test, even on your own systems.
+  </Step>
+  
+  <Step title="Controlled Test Targets">
+    Only deploy against systems you have explicitly configured with known vulnerabilities for testing purposes.
+  </Step>
+  
+  <Step title="Monitoring and Logging">
+    Implement comprehensive logging and monitoring to understand all actions taken by the software.
+  </Step>
+  
+  <Step title="Containment Plan">
+    Have a documented plan for immediate shutdown and containment if the software escapes isolation.
+  </Step>
+  
+  <Step title="Disposal Protocol">
+    Properly destroy all instances after testing, including snapshots and backups.
+  </Step>
+</Steps>
+
+### Organizational Requirements
+
+If using Proone in an institutional setting (university, research lab, security company):
+
+<CardGroup cols={2}>
+  <Card title="Institutional Review Board (IRB)" icon="clipboard-check">
+    Obtain approval for security research involving network scanning and exploitation techniques.
+  </Card>
+  
+  <Card title="Legal Review" icon="file-contract">
+    Have your organization's legal counsel review the research plan and confirm compliance with applicable laws.
+  </Card>
+  
+  <Card title="Ethics Committee" icon="handshake">
+    Get ethical approval for research involving potentially harmful software.
+  </Card>
+  
+  <Card title="Insurance Coverage" icon="umbrella">
+    Verify that cyber liability insurance covers security research activities.
+  </Card>
+</CardGroup>
+
+## Red Team Usage
+
+<Warning>
+  **Professional Penetration Testers**: Even with authorization, using Proone in production assessments is high-risk and generally inadvisable.
+</Warning>
+
+If considering use in professional security assessments:
+
+1. **Explicit Written Authorization**: "Penetration testing authorization" is insufficient. Specific authorization for autonomous worm deployment is required.
+2. **Scope Limitations**: Worm behavior makes it difficult to restrict to authorized scope.
+3. **Alternative Tools**: Use purpose-built penetration testing tools with better controls.
+4. **Liability**: Consider professional liability for any unintended propagation.
+5. **Notification**: Stakeholders must understand the nature of self-propagating malware.
+
+## Educational Use
+
+<Note>
+  **Students and Educators**: This software can be valuable for understanding malware architecture, but requires careful handling.
+</Note>
+
+### Academic Guidelines
+
+<AccordionGroup>
+  <Accordion title="Classroom Environment" icon="school">
+    - Use university's isolated lab network
+    - Obtain departmental approval
+    - Supervise all student activities
+    - Document educational objectives
+    - Restrict code distribution
+  </Accordion>
+
+  <Accordion title="Research Projects" icon="flask">
+    - Focus on defensive applications
+    - Publish responsibly (no weaponizable details)
+    - Coordinate with security team
+    - Archive research data securely
+    - Consider ethics of dual-use research
+  </Accordion>
+
+  <Accordion title="Code Analysis" icon="magnifying-glass">
+    - Study source code without compilation
+    - Analyze architecture and design patterns
+    - Understand subsystem interactions
+    - Learn from implementation techniques
+    - Use as a case study for malware analysis
+  </Accordion>
+</AccordionGroup>
+
+## Reporting Vulnerabilities
+
+If you discover vulnerabilities in IoT devices through analysis of Proone's techniques:
+
+<Steps>
+  <Step title="Do Not Deploy Proone">
+    Never use Proone itself to discover or verify vulnerabilities in production systems.
+  </Step>
+  
+  <Step title="Responsible Disclosure">
+    Follow coordinated vulnerability disclosure practices with affected vendors.
+  </Step>
+  
+  <Step title="Document Safely">
+    Create proof-of-concept demonstrations in isolated environments only.
+  </Step>
+  
+  <Step title="Engage CERTs">
+    Work with Computer Emergency Response Teams (CERTs) for widespread vulnerabilities.
+  </Step>
+</Steps>
+
+## Disclaimer
+
+<Card title="Author's Disclaimer" icon="file-contract">
+  The author of Proone has published this software for educational and research purposes only. The author:
+  
+  - Does not endorse or encourage illegal use
+  - Bears no responsibility for misuse by others
+  - Explicitly abandoned operational deployment
+  - Intends this as an "art project" and learning tool
+</Card>
+
+<Warning>
+  **Your Responsibility**: Regardless of the author's intent, **you are personally and legally responsible** for your actions with this software. "I was just testing" or "it's for educational purposes" are not legal defenses for unauthorized access.
+</Warning>
+
+## Resources and Further Reading
+
+### Legal Resources
+
+- [EFF Guide to Computer Security Law](https://www.eff.org/issues/coders/vulnerability-reporting-faq)
+- [SANS Institute: Legal Issues in Penetration Testing](https://www.sans.org/white-papers/)
+- [NIST Cybersecurity Framework](https://www.nist.gov/cyberframework)
+
+### Ethical Guidelines
+
+- [ACM Code of Ethics](https://www.acm.org/code-of-ethics)
+- [ISC2 Code of Ethics](https://www.isc2.org/Ethics)
+- [SANS Ethics Guidelines](https://www.sans.org/ethics/)
+
+### Academic References
+
+From the original project documentation:
+
+<CardGroup cols={2}>
+  <Card title="Legal Analysis of IoT Botnets" href="https://scholarship.law.tamu.edu/lawreview/vol3/iss3/9/">
+    Academic paper examining legal frameworks around IoT security
+  </Card>
+  
+  <Card title="Security Research Thesis" href="https://www.duo.uio.no/bitstream/handle/10852/22917/JeremyxLundex-xUiO-Thesis.pdf">
+    University thesis on related malware research
+  </Card>
+</CardGroup>
+
+---
+
+## Final Warning
+
+<Warning>
+  **By accessing, downloading, compiling, or using the Proone software, you acknowledge that:**
+  
+  1. You understand this is malicious software
+  2. You will only use it in isolated, controlled environments
+  3. You will not use it against systems without explicit authorization
+  4. You accept full legal responsibility for your actions
+  5. You understand the criminal and civil penalties for misuse
+  6. You will comply with all applicable laws and regulations
+  
+  **If you cannot agree to these terms, do not proceed.**
+</Warning>
+
+<Card title="When in Doubt" icon="question" color="#0088cc">
+  If you have any questions about whether your intended use is legal and ethical, **consult with a lawyer and your organization's security team before proceeding**. It is always better to ask for permission than to face prosecution.
+</Card>
+
+---
+
+<Note>
+  This security notice is not legal advice. Consult with qualified legal counsel regarding your specific situation and jurisdiction.
+</Note>
+
+Copyright (c) 2019-2022 David Timber &lt;dxdt@dev.snart.me&gt;
